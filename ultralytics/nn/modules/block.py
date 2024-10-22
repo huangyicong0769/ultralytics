@@ -70,6 +70,7 @@ __all__ = (
     "CARAFE"
     "FreqFusion",
     "C2PSSA",
+    "ConvHighIFM",
 )
 
 
@@ -1411,25 +1412,18 @@ class HighFAM(nn.Module):
 #         y = y + self.mlp(y)
 #         return y
 
-class HighIFM(nn.Module):
-    """High-stage information fusion module."""
+class ConvHighIFM(nn.Module):
+    """ High-stage information fusion module.
+        Replace ViT to Conv
+    """
 
-    def __init__(self, c1, c2, n=1, e=0.5, num_head=4):
+    def __init__(self, c1, c2, n=1, e=0.5):
         super().__init__()
         c_ = int(c2 * e)
         self.conv1 = Conv(c1, c_)
-        # self.m = TransformerBlock(c_, c_, num_head, n)
-        # self.m = nn.Sequential(*(C2fMCA(c_, c_, n)))
-        # self.m = C2fMCA(c_, c_, n)
-        # self.m = nn.Sequential(*((RepVGGDW(c_), MCA(c_)) for _ in range(n)))
-        # self.m = nn.Sequential(*(BottleneckMCA(c1, c1, False, k=(3, 3), e=e) for _ in range(n)))
-        # self.m = nn.Sequential(*(mBottleneck(c2, c2, e=e) for _ in range(n)))
         self.conv2 = Conv(c_, c2)
-        # self.conv3 = Conv(c1, c2)
-        self.attn = MCA(c_)
         self.m = nn.Sequential()
         for _ in range(n):
-            # self.m.add_module('InceptionNeXtBlock', InceptionNeXtBlock(c_))
             self.m.add_module('RepVGGDW', RepVGGDW(c_))
             self.m.add_module('MCA', MCA(c_))
 
@@ -1437,6 +1431,12 @@ class HighIFM(nn.Module):
         # y = self.m(self.conv1(x)) + self.conv3(x)
         y = self.conv2(self.m(self.conv1(x)))
         return y
+
+class HighIFM(ConvHighIFM):
+    def __init__(self, c1, c2, n=1, e=0.5, num_head=4):
+        super().__init__(c1, c2, n, e)
+        c_ = int(c2*e)
+        self.m = nn.Sequential(*(StokenAttentionLayer(c_, 1, (1, 1), num_head) for _ in range(n)))
 
 class LowLAF(nn.Module):
     """Low-stage lightweight adjacent layer fusion module"""
