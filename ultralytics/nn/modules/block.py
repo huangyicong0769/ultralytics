@@ -8,7 +8,11 @@ import torch.nn.functional as F
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
-from .transformer import TransformerBlock
+from .transformer import TransformerBlock, MLPBlock, LayerNorm2d, MLP, DropPath
+from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe
+
+from math import log2
+from typing import Literal
 
 __all__ = (
     "DFL",
@@ -49,6 +53,23 @@ __all__ = (
     "Attention",
     "PSA",
     "SCDown",
+    "SEAttention",
+    "MCA",
+    "C2fMCA",
+    "C3kMCA",
+    "C3k2MCA",
+    "C2fMCAELAN4",
+    "LowFAM",
+    "LowIFM",
+    "Split",
+    "HighFAM",
+    "HighIFM",
+    "LowLAF",
+    "HiLAF",
+    "Inject",
+    "CARAFE"
+    "FreqFusion",
+    "C2PSSA",
 )
 
 
@@ -231,7 +252,7 @@ class C2f(nn.Module):
         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
         self.cv2 = Conv((2 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
         self.m = nn.ModuleList(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
-
+ 
     def forward(self, x):
         """Forward pass through C2f layer."""
         y = list(self.cv1(x).chunk(2, 1))
@@ -442,31 +463,31 @@ class MaxSigmoidAttnBlock(nn.Module):
         return x.view(bs, -1, h, w)
 
 
-class C2fAttn(nn.Module):
-    """C2f module with an additional attn module."""
+# class C2fAttn(nn.Module):
+#     """C2f module with an additional attn module."""
 
-    def __init__(self, c1, c2, n=1, ec=128, nh=1, gc=512, shortcut=False, g=1, e=0.5):
-        """Initializes C2f module with attention mechanism for enhanced feature extraction and processing."""
-        super().__init__()
-        self.c = int(c2 * e)  # hidden channels
-        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
-        self.cv2 = Conv((3 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
-        self.m = nn.ModuleList(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
-        self.attn = MaxSigmoidAttnBlock(self.c, self.c, gc=gc, ec=ec, nh=nh)
+#     def __init__(self, c1, c2, n=1, ec=128, nh=1, gc=512, shortcut=False, g=1, e=0.5):
+#         """Initializes C2f module with attention mechanism for enhanced feature extraction and processing."""
+#         super().__init__()
+#         self.c = int(c2 * e)  # hidden channels
+#         self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+#         self.cv2 = Conv((3 + n) * self.c, c2, 1)  # optional act=FReLU(c2)
+#         self.m = nn.ModuleList(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
+#         self.attn = MaxSigmoidAttnBlock(self.c, self.c, gc=gc, ec=ec, nh=nh)
 
-    def forward(self, x, guide):
-        """Forward pass through C2f layer."""
-        y = list(self.cv1(x).chunk(2, 1))
-        y.extend(m(y[-1]) for m in self.m)
-        y.append(self.attn(y[-1], guide))
-        return self.cv2(torch.cat(y, 1))
+#     def forward(self, x, guide):
+#         """Forward pass through C2f layer."""
+#         y = list(self.cv1(x).chunk(2, 1))
+#         y.extend(m(y[-1]) for m in self.m)
+#         y.append(self.attn(y[-1], guide))
+#         return self.cv2(torch.cat(y, 1))
 
-    def forward_split(self, x, guide):
-        """Forward pass using split() instead of chunk()."""
-        y = list(self.cv1(x).split((self.c, self.c), 1))
-        y.extend(m(y[-1]) for m in self.m)
-        y.append(self.attn(y[-1], guide))
-        return self.cv2(torch.cat(y, 1))
+#     def forward_split(self, x, guide):
+#         """Forward pass using split() instead of chunk()."""
+#         y = list(self.cv1(x).split((self.c, self.c), 1))
+#         y.extend(m(y[-1]) for m in self.m)
+#         y.append(self.attn(y[-1], guide))
+#         return self.cv2(torch.cat(y, 1))
 
 
 class ImagePoolingAttn(nn.Module):
@@ -1106,3 +1127,888 @@ class SCDown(nn.Module):
     def forward(self, x):
         """Applies convolution and downsampling to the input tensor in the SCDown module."""
         return self.cv2(self.cv1(x))
+
+
+class SEAttention(nn.Module):
+    def __init__(self, c1, c2, r=16):
+        super().__init__()
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(        
+            nn.Linear(c1, c1//r, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(c1//r, c1, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        return x * self.fc(self.avgpool(x).view(b, c)).view(b, c, 1, 1).expand_as(x)
+    
+class StdPool(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        std = x.view(b, c, -1).std(dim=2, keepdim=True)
+        std = std.reshape(b, c, 1, 1)
+        return std
+        
+class MCAGate(nn.Module):
+    def __init__(self, k=3, pool_types=['avg', 'std']):
+        """Constructs a MCAGate module.
+        Args:
+            k: kernel size
+            pool_types: pooling type. 'avg': average pooling, 'max': max pooling, 'std': standard deviation pooling.
+        """
+        super().__init__()
+
+        self.pools = nn.ModuleList([])
+        for pool_type in pool_types:
+            if pool_type == 'avg':
+                self.pools.append(nn.AdaptiveAvgPool2d(1))
+            elif pool_type == 'max':
+                self.pools.append(nn.AdaptiveAvgPool2d(1))
+            elif pool_type == 'std':
+                self.pools.append(StdPool())
+            else:
+                raise NotImplementedError
+            
+        # self.conv = nn.Conv2d(1, 1, kernel_size=(1, k), stride=1, padding=(0, (k-1)//2), bias=False)
+        self.conv = Conv(1, 1, (1, k), 1, (0, (k-1)//2))
+        self.sigmoid = nn.Sigmoid()
+        self.weight = nn.Parameter(torch.rand(2))
+
+    def forward(self, x):
+        f = [pool(x) for pool in self.pools]
+
+        if len(f) == 1:
+            out = f[0]
+        elif len(f) == 2:
+            weight = torch.sigmoid(self.weight)
+            out = 1/2*(f[0]+f[1]) + weight[0]*f[0]+weight[1]*f[1]
+        else:
+            assert False, "Feature Extraction Exception!"
+
+        out = out.permute(0, 3, 2, 1).contiguous()
+        out = self.conv(out)
+        out = out.permute(0, 3, 2, 1).contiguous()
+        out = self.sigmoid(out)
+        out = out.expand_as(x)
+
+        return x*out
+
+class MCA(nn.Module):
+    def __init__(self, c1, no_spatial=False):
+        """Constructs a MCA module.
+        Args:
+            c1: Number of channels of the input feature maps
+            no_spatial: whether to build channel dimension interactions
+        """
+        super().__init__()
+
+        self.h_cw = MCAGate()
+        self.w_hc = MCAGate()
+        self.no_spatial = no_spatial
+
+        if not no_spatial:
+            l = 1.5
+            g = 1
+            temp = round(abs((log2(c1) - g) / l))
+            k = temp if temp % 2 else temp - 1
+
+            self.c_hw = MCAGate(k=k)
+
+    def forward(self, x):
+        x_h = x.permute(0, 2, 1, 3).contiguous()
+        x_h = self.h_cw(x_h)
+        x_h = x_h.permute(0, 2, 1, 3).contiguous()
+
+        x_w = x.permute(0, 3, 2, 1).contiguous()
+        x_w = self.w_hc(x_w)
+        x_w = x_w.permute(0, 3, 2, 1).contiguous()
+
+        if not self.no_spatial:
+            x_c = self.c_hw(x)
+            return 1/3*(x_h+x_w+x_c)
+        else:
+            return 1/2*(x_h+x_w)
+
+class pMCA(MCA):
+    def __init__(self, c, no_spatial=False):
+        super().__init__(c, no_spatial)
+        self.weights = [nn.Parameter(torch.tensor(1., requires_grad=True)) for _ in range(2 if no_spatial else 3)]
+    
+    def forward(self, x):
+        x_h = x.permute(0, 2, 1, 3).contiguous()
+        x_h = self.h_cw(x_h)
+        x_h = x_h.permute(0, 2, 1, 3).contiguous()
+
+        x_w = x.permute(0, 3, 2, 1).contiguous()
+        x_w = self.w_hc(x_w)
+        x_w = x_w.permute(0, 3, 2, 1).contiguous()
+
+        if not self.no_spatial:
+            x_c = self.c_hw(x)
+            return 1/3*(x_h*self.weights[0]+x_w*self.weights[1]+x_c*self.weights[2])
+        else:
+            return 1/2*(x_h*self.weights[0]+x_w*self.weights[1])
+
+class BottleneckAttn(Bottleneck):
+    """Bottleneck with Attention."""
+
+    def __init__(self, c1, c2, attn=nn.Identity, shortcut=True, g=1, k=(3, 3), e=0.5):
+        """Initializes a MCA bottleneck module with optional shortcut connection and configurable parameters."""
+        super().__init__(c1, c2, shortcut, g, k, e)
+        self.attn = attn(c2)
+
+    def forward(self, x):
+        """Applies the YOLO FPN to input data."""
+        y = self.cv2(self.cv1(x))
+        y = self.attn(y)
+        return x + y if self.add else y
+    
+class C2fAttn(C2f):
+    """C2f with Attention modified Bottlesneck."""
+
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, g=1, e=0.5):
+        """Initializes a CSP bottleneck with 2 convolutions and n Bottleneck blocks for faster processing."""
+        super().__init__(c1, c2, n, shortcut, g, e)
+        self.m = nn.ModuleList(BottleneckAttn(self.c, self.c, attn, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
+
+class C3kAttn(C3k):
+    """C2f with Attention modified Bottlesneck."""
+
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, g=1, e=0.5, k=3):
+        """Initializes a CSP bottleneck with 2 convolutions and n Bottleneck blocks for faster processing."""
+        super().__init__(c1, c2, n, shortcut, g, e, k)
+        c_ = int(c2 * e)
+        self.m = nn.Sequential(*(BottleneckAttn(c_, c_, attn, shortcut, g, k=(k, k), e=1.0) for _ in range(n)))
+
+class C3k2Attn(C3k2):
+    """C2f with Attention modified Bottlesneck."""
+
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, c3k=False, e=0.5, g=1, shortcut=True):
+        """Initializes a CSP bottleneck with 2 convolutions and n Bottleneck blocks for faster processing."""
+        super().__init__(c1, c2, n, c3k, e, g, shortcut)
+        self.m = nn.ModuleList(
+            C3kAttn(self.c, self.c, 2, attn, shortcut, g) if c3k else BottleneckAttn(self.c, self.c, attn, shortcut, g) for _ in range(n)
+        )
+
+
+class C2fAttnELAN4(RepNCSPELAN4):
+    """C2f-Attention-ELAN."""
+
+    def __init__(self, c1, c2, c3, c4, n=1, attn=nn.Identity, shortcut=False):
+        super().__init__(c1, c2, c3, c4, n)
+        self.cv2 = nn.Sequential(C2fAttn(c3 // 2, c4, n, attn, shortcut), Conv(c4, c4, 3, 1))
+        self.cv3 = nn.Sequential(C2fAttn(c4, c4, n, attn, shortcut), Conv(c4, c4, 3, 1))
+
+# class mBottleneck(nn.Module):
+#     def __init__(self, c1, c2, shortcut=False, g=1, k=(3, 3), e=0.5):
+#         super().__init__()
+#         c_ = int(c2*e)
+#         self.cv1 = RepConv(c1, c_)
+#         self.cv2 = RepVGGDW(c_)
+#         self.cv3 = RepConv(c_, c2)
+#         self.attn = MCA(c2)
+#         self.add = shortcut and c1 == c2
+
+#     def forward(self, x):
+#         return x + self.attn(self.cv3(self.cv2(self.cv1(x)))) if self.add else self.attn(self.cv3(self.cv2(self.cv1(x))))
+
+class LowFAM(nn.Module):
+    """Low-stage feature alignment module."""
+
+    def __init__(self, c_u=None, sample:Literal['bilinear', 'carafe', 'FreqFusion']='bilinear'):
+        super().__init__()
+        self.sample = sample
+        if self.sample == 'bilinear':
+            self.us = F.interpolate
+        elif self.sample == 'carafe':
+            assert c_u is not None
+            self.us = CARAFE(c_u, 2)
+        elif self.sample == 'FreqFusion':
+            assert c_u is not None
+            self.us = FreqFusion(c_u, c_u//2)
+        else:
+            raise NotImplementedError
+        self.ds = F.adaptive_avg_pool2d
+
+    def forward(self, x:list):
+        _, _, H, W = x[1].shape
+        if self.sample == 'bilinear':
+            y = self.us(x[0], (H, W), mode='bilinear', align_corners=False)
+        elif self.sample == 'carafe':
+            y = self.us(x[0])
+        elif self.sample == 'FreqFusion':
+            y, x[1] = self.us(x_l=x[0], x_h=x[1])
+        else:
+            raise NotImplementedError
+        return torch.cat([y, x[1]] + [self.ds(x_, [H, W]) for x_ in x[2:]], dim=1)
+        
+class LowIFM(nn.Module):
+    """Low-stage information fusion module."""
+
+    def __init__(self, c1, c2, n=1, e=0.5, k=(1, 3)):
+        super().__init__()
+        c_ = int(c2 * e)
+        self.conv1 = Conv(c1, c_, k=1)
+        # self.m = nn.Sequential(*(RepVGGDW(c_) for _ in range(n)))
+        # self.m = nn.Sequential(*(mBottleneck(c2, c2, e=e) for _ in range(n)))
+        self.conv2 = Conv(c_, c2, k=1)
+        # self.attn = MCA(c_)
+        self.m = nn.Sequential()
+        for _ in range(n):
+            self.m.add_module('RepVGGDW', RepVGGDW(c_))
+            self.m.add_module('MCA', MCA(c_))
+
+    def forward(self, x):
+        # y = self.m(self.conv1(x))
+        y = self.conv2(self.m(self.conv1(x)))
+        return y
+    
+class Split(nn.Module):
+    def __init__(self, c):
+        super().__init__()
+        self.c = c
+
+    def forward(self, x:torch.Tensor):
+        return x.split(self.c, dim=1)
+
+class HighFAM(nn.Module):
+    """High-stage feature alignment module."""
+    
+    def __init__(self):
+        super().__init__()
+        self.ds = F.adaptive_avg_pool2d
+
+    def forward(self, x:list[torch.Tensor]):
+        _, _, H, W = x[0].shape
+        return torch.cat([x[0]] + [self.ds(x_, [H, W]) for x_ in x[1:]], dim=1)
+
+# class MLP(nn.Module):
+#     def __init__(self, c1, c2, h=None, d=0.):
+#         super().__init__()
+#         c_ = h or c1
+#         self.fc1 =Conv(c1, c_, act=False)
+#         self.conv = DWConv(c_, c_, 3, 1, 1)
+#         self.fc2 = Conv(c_, c2, act=False)
+#         self.drop = nn.Dropout(d)
+
+#     def forward(self, x):
+#         return self.drop(self.fc2(self.drop(self.act(self.conv(self.fc1(x))))))
+        
+# class topBlock(nn.Module):
+#     def __init__(self, dim, n, attn_r = 2., mlp_r = 4., d = 0.):
+#         super().__init__()
+#         self.attn = Attention(dim, n, attn_r)
+#         mlp_ = int(dim * mlp_r)
+#         self.mlp = MLP(dim, dim, mlp_, d)
+
+#     def forward(self, x):
+#         y = x + self.attn(x)
+#         y = y + self.mlp(y)
+#         return y
+
+class HighIFM(nn.Module):
+    """High-stage information fusion module."""
+
+    def __init__(self, c1, c2, n=1, e=0.5, num_head=4):
+        super().__init__()
+        c_ = int(c2 * e)
+        self.conv1 = Conv(c1, c_)
+        # self.m = TransformerBlock(c_, c_, num_head, n)
+        # self.m = nn.Sequential(*(C2fMCA(c_, c_, n)))
+        # self.m = C2fMCA(c_, c_, n)
+        # self.m = nn.Sequential(*((RepVGGDW(c_), MCA(c_)) for _ in range(n)))
+        # self.m = nn.Sequential(*(BottleneckMCA(c1, c1, False, k=(3, 3), e=e) for _ in range(n)))
+        # self.m = nn.Sequential(*(mBottleneck(c2, c2, e=e) for _ in range(n)))
+        self.conv2 = Conv(c_, c2)
+        # self.conv3 = Conv(c1, c2)
+        self.attn = MCA(c_)
+        self.m = nn.Sequential()
+        for _ in range(n):
+            # self.m.add_module('InceptionNeXtBlock', InceptionNeXtBlock(c_))
+            self.m.add_module('RepVGGDW', RepVGGDW(c_))
+            self.m.add_module('MCA', MCA(c_))
+
+    def forward(self, x):
+        # y = self.m(self.conv1(x)) + self.conv3(x)
+        y = self.conv2(self.m(self.conv1(x)))
+        return y
+
+class LowLAF(nn.Module):
+    """Low-stage lightweight adjacent layer fusion module"""
+
+    def __init__(self, c1, c2, c_s, c_l, sample:Literal['bilinear', 'carafe', 'FreqFusion']='bilinear'):
+        super().__init__()
+        self.conv1 = Conv(c1, c1)
+        self.conv2 = Conv(c_s, c2)
+        self.sample = sample
+        if self.sample == 'bilinear':
+            self.us = F.interpolate
+        elif self.sample == 'carafe':
+            self.us = CARAFE(c_l, 2)
+        elif self.sample == 'FreqFusion':
+            self.us = FreqFusion(c_l, c1)
+        else:
+            raise NotImplementedError
+        self.ds = F.adaptive_avg_pool2d
+
+    def forward(self, x:list[torch.Tensor]):
+        _, _, H, W = x[1].shape
+
+        if self.sample == 'bilinear':
+            x[0] = self.us(x[0], (H, W), mode='bilinear', align_corners=False)
+        elif self.sample == 'carafe':
+            x[0] = self.us(x[0])
+        elif self.sample == 'FreqFusion':
+            x[0], x[1] = self.us(x_l=x[0], x_h=x[1])
+        else:
+            raise NotImplementedError
+        x[1] = self.conv1(x[1])
+        x[2] = self.ds(x[2], [H, W])
+
+        return self.conv2(torch.cat(x, 1))
+    
+class HiLAF(nn.Module):
+    """High-stage lightweight adjacent layer fusion module"""
+
+    def __init__(self, c1, c2):
+        super().__init__()
+        self.conv = Conv(c1, c2)
+        self.ds = F.adaptive_avg_pool2d
+
+    def forward(self, x:list[torch.Tensor]):
+        _, _, H, W = x[0].shape
+        x[1] = self.ds(x[1], [H, W])
+        return self.conv(torch.cat(x, 1))
+    
+class Inject(nn.Module):
+    """Information injection module"""
+
+    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion']='bilinear'):
+        super().__init__()
+        
+        self.index = index
+        self.conv1 = Conv(c1, c2, act=False)
+        self.conv2 = Conv(c1, c2, act=False)
+        self.conv3 = Conv(c1, c2, act=False)
+        self.conv4 = nn.Sequential(*[RepVGGDW(c2) for _ in range(n)])
+        self.act = nn.Sigmoid()
+        self.sample = sample
+        if self.sample == 'carafe':
+            self.us1 = CARAFE(c2, 2)
+            self.us2 = CARAFE(c2, 2)
+        elif self.sample == 'FreqFusion':
+            self.us1 = FreqFusion(c2, c2)
+            self.us2 = FreqFusion(c2, c2)
+            self.w1, self.w2 = torch.tensor(1.0, requires_grad=True), torch.tensor(1.0, requires_grad=True)
+
+    def forward(self, x:list[torch.Tensor]):
+
+        # print(f"{x[0].shape}, {x[1][self.index].shape}")
+
+        x1 = self.conv1(x[0])
+        x2 = x[1][self.index]
+
+        _, _, H, W = x1.shape
+        x_ = self.act(self.conv2(x2))
+        x2 = self.conv3(x2)
+
+        if self.sample == 'avgpool':
+            y = F.adaptive_avg_pool2d(x2, [H, W]) + x1 * F.adaptive_avg_pool2d(x_, [H, W])
+        elif self.sample == 'bilinear':
+            y = F.interpolate(x2, (H, W), mode='bilinear', align_corners=False) + x1 * F.interpolate(x_, (H, W), mode='bilinear', align_corners=False)
+        elif self.sample == 'carafe':
+            y = self.us1(x2) + x1 * self.us2(x_)
+        elif self.sample == 'FreqFusion':
+            x2, x11 = self.us1(x_l=x2, x_h=x1)
+            x_, x12 = self.us2(x_l=x_, x_h=x1)
+            x1 = (x11*self.w1+x12*self.w2)*0.5
+            y = x2 + x1 * x_
+        else:
+            raise NotImplementedError
+
+        return self.conv4(y)
+
+class CARAFE(nn.Module):
+    '''Content-Aware ReAssembly of FEatures'''
+
+    def __init__(self, c1, s=2, c_=64, k=5):
+        super().__init__()
+        self.s = s
+        self.compressor = Conv(c1, c_)
+        self.encoder = Conv(c_, s**2 * k**2, k=k-2, act=False)
+        self.shuffle = nn.PixelShuffle(s)
+        self.normalizer = nn.Softmax(dim=1)
+
+        self.us = nn.Upsample(scale_factor=s, mode='nearest')
+        self.unfold = nn.Unfold(k, dilation=s, padding=k//2*s)
+    
+    def forward(self, x:torch.Tensor, mask:torch.Tensor|None=None):
+        b, c, h, w = x.shape
+        h_, w_ = h*self.s, w*self.s
+
+        if mask is None:
+            mask = self.normalizer(self.shuffle(self.encoder(self.compressor(x))))
+
+        # print(f"CARAFE:x={x.shape}, mask={mask.shape}, s={self.s}")
+
+        x = self.us(x)
+        # print(f"CARAFE:x={x.shape}")
+        x = self.unfold(x)
+        # print(f"CARAFE:x={x.shape}")
+        x = x.view(b, c, -1, h_, w_)
+        # print(f"CARAFE:x={x.shape}")
+        return torch.einsum('bkhw,bckhw->bchw', [mask, x])
+
+class FreqFusion(nn.Module):
+    '''See https://github.com/Linwei-Chen/FreqFusion'''
+
+    def __init__(self, c_l, c_h, s=1, k_l=5, k_h=3, g_u=1, k_e=3, d_e=1, c_=64, align_corners=False, upsample_mode='nearest', feature_resample=False, g_feature_resample=4, comp_feat_upsample=True, use_high_pass=True, use_low_pass=True, residual_h=True, semi_conv=True, hamming_window=True, feature_resample_norm=True):
+        super().__init__()
+        self.s = s
+        self.k_l = k_l
+        self.k_h = k_h
+        self.g_u = g_u
+        self.k_e = k_e
+        self.d_e = d_e
+        self.c_ = c_
+
+        self.compressor_h = Conv(c_h, c_, 1, act=False)
+        self.compressor_l = Conv(c_l, c_, 1, act=False)
+
+        self.alpf = Conv(c_, k_l**2 * g_u * s**2, k_e, p=int((k_e-1)*d_e/2), d=d_e, g=1, act=False) #Adaptive Low-Pass Filte
+
+        self.align_corners = align_corners
+        self.upsample_mode = upsample_mode
+        self.residual_h = residual_h
+        self.use_high_pass = use_high_pass
+        self.use_low_pass = use_low_pass
+        self.semi_conv = semi_conv
+        self.feature_resample = feature_resample
+        self.comp_feat_upsample = comp_feat_upsample
+
+        if self.feature_resample:
+            self.dysampler = LocalSimGuideSampler(c_, 2, 'lp', g_feature_resample, True, k_e, norm=feature_resample_norm)
+
+        if self.use_high_pass: #Adaptive High-Pass Filte
+            self.ahpf = Conv(c_, k_h**2 * g_u * s**2, k_e, p=int((k_e-1)*d_e/2), d=d_e, g=1, act=False)
+
+        self.hamming_window = hamming_window
+        p_l = 0
+        p_h = 0
+        if self.hamming_window:
+            self.register_buffer('hamming_lowpass', torch.FloatTensor(hamming2D(k_l+2*p_l, k_l+2*p_l))[None, None,])
+            self.register_buffer('hamming_highpass', torch.FloatTensor(hamming2D(k_h+2*p_h, k_h+2*p_h))[None, None,])
+        else:
+            self.register_buffer('hamming_lowpass', torch.FloatTensor([1.0]))
+            self.register_buffer('hamming_highpass', torch.FloatTensor([1.0]))
+
+        self.init_weights()
+
+    def init_weights(self):
+        # for m in self.modules():
+        #     if isinstance(m, Conv):
+        #         nn.init.xavier_uniform_(m)
+        normal_init(self.alpf, std=0.001)
+        if self.use_high_pass:
+            normal_init(self.ahpf, std=0.001)
+
+    def kernel_normalize(self, mask, k, s=None, hamming = 1):
+        if s is not None:
+            mask = F.pixel_shuffle(mask, s)
+        n, mask_c, h, w = mask.size()
+        c_mask = int(mask_c/float(k**2))
+        mask = mask.view(n, c_mask, -1, h, w)
+        mask = F.softmax(mask, dim=2, dtype=mask.dtype)
+        mask = mask.view(n, c_mask, k, k, h, w)
+        mask = mask.permute(0, 1, 4, 5, 2, 3).contiguous().view(n, -1, k, k)
+        mask = mask * hamming
+        mask /= mask.sum(dim=(-1, -2), keepdim=True)
+        mask = mask.view(n, c_mask, h, w, -1)
+        mask = mask.permute(0, 1, 4, 2, 3).contiguous().view(n, -1, h, w)
+        return mask
+
+    def forward(self, x_l:torch.Tensor|list[torch.Tensor], x_h:torch.Tensor|None=None):
+        if x_h is None:
+            x_h = x_l[1]
+            x_l = x_l[0]
+
+        xcl = self.compressor_l(x_l)
+        xch = self.compressor_h(x_h)
+
+        if self.semi_conv:
+            if self.comp_feat_upsample:
+                if self.use_high_pass:
+                    #AHPF
+                    mask_hh = self.ahpf(xch)
+                    mask_hi = self.kernel_normalize(mask_hh, self.k_h, hamming=self.hamming_highpass)
+                    xch = xch + xch - carafe(xch, mask_hi, self.k_h, self.g_u, 1)
+
+                    #ALPF
+                    mask_lh = self.alpf(xch)
+                    mask_li = self.kernel_normalize(mask_lh, self.k_l, hamming=self.hamming_lowpass)
+                    mask_lll = self.alpf(xcl)
+                    mask_ll = F.interpolate(carafe(mask_lll, mask_li, self.k_l, self.g_u, 2), size=xch.shape[-2:], mode='nearest')
+                    mask_l = mask_lh + mask_ll
+
+                    mask_li = self.kernel_normalize(mask_l, self.k_l, hamming=self.hamming_lowpass)
+                    mask_hl = F.interpolate(carafe(self.ahpf(xcl), mask_li, self.k_l, self.g_u, 2), size=xch.shape[-2:], mode='nearest')
+
+                    mask_h = mask_hh+mask_hl
+                else:
+                    raise NotImplementedError
+            else:
+                mask_l = self.alpf(xch) + F.interpolate(self.alpf(xcl), size=xch.shape[-2:], mode='nearest')
+                if self.use_high_pass:
+                    mask_h = self.ahpf(xch) + F.interpolate(self.ahpf(xcl), size=xch.shape[-2:], mode='nearest')
+        else:
+            xc = F.interpolate(xcl, size=xch.shape[-2:], mode='nearest') + xch
+            mask_l = self.alpf(xc)
+            if self.use_high_pass:
+                mask_h = self.ahpf(xc)
+
+        mask_l = self.kernel_normalize(mask_l, self.k_l, hamming=self.hamming_lowpass)
+        
+        if self.semi_conv:
+            x_l = carafe(x_l, mask_l, self.k_l, self.g_u, 2)
+        else:
+            x_l = resize(input=x_l, size=x_h.shape[2:], mode=self.upsample_mode, align_corners=None if self.upsample_mode=='nearest' else self.align_corners)
+            x_l = carafe(x_l, mask_l, self.k_l, self.g_u, 1)
+
+        if self.use_high_pass:
+            mask_h = self.kernel_normalize(mask_h, self.k_h, hamming=self.hamming_highpass)
+            x_hh = x_h - carafe(x_h, mask_h, self.k_h, self.g_u, 1)
+            x_h = (x_hh + x_h) if self.residual_h else x_hh
+
+        if self.feature_resample:
+            x_l = self.dysampler(x_l=xcl, x_h=xch, feat2sample=x_l)
+
+        return x_l, x_h
+    
+class LocalSimGuideSampler(nn.Module):
+    '''Offset Generator in FreqFusion'''
+    def __init__(self, c1, s, style='lp', g=4, use_direct_scale=True, k=1, local_window=3, sim_type='cos', norm=True, direction_feat='sim_concat'):
+        super().__init__()
+        assert s == 2
+        assert style == 'lp'
+
+        self.s = s
+        self.style = style
+        self.g = g
+        self.local_window = local_window
+        self.sim_type = sim_type
+        self.direction_feat = direction_feat
+
+        assert c1 >= g and c1 % g == 0
+
+        if style == 'lp':
+            c1 = c1 // s**2
+            c2 = 2*g
+        else:
+            c2 = 2*g*s**2
+
+        if self.direction_feat == 'sim':
+            self.offset = Conv(local_window**2-1, c2, k, p=k//2, act=False)
+        elif self.direction_feat == 'sim_concat':
+            self.offset = Conv(c1 + local_window**2 - 1, c2, k, p = k//2, act=False)
+        else:
+            raise NotImplementedError
+        normal_init(self.offset, std=0.001)
+
+        if use_direct_scale:
+            if self.direction_feat == 'sim':
+                self.direct_scale = Conv(c1, c2, k, p=k//2, act=False)
+            elif self.direction_feat == 'sim_concat':
+                self.direct_scale = Conv(c1 + local_window**2 - 1, c2, k, p=k//2, act=False)
+            else:
+                raise NotImplementedError
+            constant_init(self.direct_scale, val=0.)
+
+        if self.direction_feat == 'sim':
+            self.offset_h = Conv(local_window**2 - 1, c2, k, p=k//2, act=False)
+        elif self.direction_feat == 'sim_concat':
+            self.offset_h = Conv(c1 + local_window**2 - 1, c2, k, p=k//2, act=False)
+        else:
+            raise NotImplementedError
+        normal_init(self.offset_h, std=0.001)
+
+        if use_direct_scale:
+            if self.direction_feat == 'sim':
+                self.direct_scale_h = Conv(c1, c2, k, p=k//2, act=False)
+            elif self.direction_feat == 'sim_concat':
+                self.direct_scale_h = Conv(c1 + local_window**2 - 1, c2, k, p=k//2, act=False)
+            else:
+                raise NotImplementedError
+            constant_init(self.direct_scale_h, val=0.)
+
+        self.norm = norm
+        if self.norm:
+            self.norm_h = nn.GroupNorm(c1//8, c1)
+            self.norm_l = nn.GroupNorm(c1//8, c1)
+        else:
+            self.norm_h = nn.Identity()
+            self.norm_l = nn.Identity()
+
+        self.register_buffer('init_pos', self._init_pos())
+
+    def _init_pos(self):
+        h = torch.arange((-self.s+1)/2, (self.s-1)/2+1)/self.s
+        return torch.stack(torch.meshgrid([h, h])).transpose(1, 2).repeat(1, self.g, 1).reshape(1, -1, 1, 1)
+    
+    def sample(self, x:torch.Tensor, offset:torch.Tensor, s=None):
+        if s is None:
+            s = self.s
+        b, _, h, w = offset.shape
+        offset = offset.view(b, 2, -1, h, w)
+
+        coord_h = torch.arange(h) + 0.5
+        coord_w = torch.arange(w) + 0.5
+        coords = torch.stack(torch.meshgrid([coord_w, coord_h])).transpose(1, 2).unsqueeze(1).unsqueeze(0).type(x.dtype).to(x.device)
+
+        normalizer = torch.tensor([w, h], dtype=x.dtype, device=x.device).view(1, 2, 1, 1, 1)
+        coords = 2 * (coords + offset) / normalizer - 1
+
+        coords = F.pixel_shuffle(coords.view(b, -1, h, w), s).view(b, 2, -1, s*h, s*w).permute(0, 2, 3, 4, 1).contiguous().flatten(0, 1)
+
+        return F.grid_sample(x.reshape(b*self.g,-1, x.size(-2), x.size(-1)), coords, mode='bilinear', align_corners=False, padding_mode='border').view(b, -1, s*h, s*w)
+    
+    def forward(self, x_l, x_h, feat2sample):
+        x_l = self.norm_l(x_l)
+        x_h = self.norm_h(x_h)
+
+        if self.direction_feat == 'sim':
+            x_l = compute_similarity(x_l, self.local_window, dilation=2, sim='cos')
+            x_h = compute_similarity(x_h, self.local_window, dilation=2, sim='cos')
+        elif self.direction_feat == 'sim_concat':
+            sim_l = torch.cat([x_l, compute_similarity(x_l, self.local_window, dilation=2, sim='cos')], dim=1)
+            sim_h = torch.cat([x_h, compute_similarity(x_h, self.local_window, dilation=2, sim='cos')], dim=1)
+            x_l, x_h = sim_l, sim_h
+
+        offset = self.get_offset_lp(x_l, x_h, sim_l, sim_h)
+        return self.sample(feat2sample, offset)
+
+    def get_offset_lp(self, x_l, x_h, sim_l, sim_h):
+        if hasattr(self, 'direct_scale'):
+            offset = (self.offset(sim_l) + F.pixel_unshuffle(self.offset_h(sim_h), self.s)) * (self.direct_scale(x_l) + F.pixel_unshuffle(self.direct_scale_h(x_h), self.s)).sigmoid() + self.init_pos
+        else:
+            offset = (self.offset(x_l) + F.pixel_unshuffle(self.offset_h(x_h), self.s)) * 0.25 + self._init_pos
+        return offset
+    
+    def get_offset(self, x_l, x_h): # Abandoned
+        if self.style == 'pl':
+            raise NotImplementedError
+        return self.get_offset_lp(x_l, x_h)
+
+class ConvMLP(nn.Module):
+    '''MLP using 1x1 convs that keeps spatial dims'''
+    def __init__(self, c1, c_=None, c2=None, act=nn.ReLU, norm=None, bias=True, drop=0.):
+        super().__init__()
+        c2 = c2 or c1
+        c_ = c_ or c1
+        if isinstance(bias, tuple) is False:
+            bias = (bias, bias)
+        
+        self.fc1 = nn.Conv2d(c1, c_, 1, bias=bias[0])
+        self.norm = LayerNorm2d(c_)
+        self.act = act()
+        self.drop = DropPath(drop)
+        self.fc2 = nn.Conv2d(c_, c2, 1, bias=bias[1])
+
+    def forward(self, x):
+        return self.fc2(self.drop(self.act(self.norm(self.fc1(x)))))
+        
+
+class tokenMixer(nn.Module):
+    def __init__(self, c, k1=3, k2=11, r=0.15):
+        super().__init__()
+        c_ = int(c*r)
+        self.conv1 = DWConv(c_, c_, k1)
+        self.conv2 = DWConv(c_, c_, (1, k2))
+        self.conv3 = DWConv(c_, c_, (k2, 1))
+        self.split_index = (c - 3*c_, c_, c_, c_)
+    
+    def forward(self, x):
+        x0, x1, x2, x3 = torch.split(x, self.split_index, dim=1)
+        return torch.cat([x0, self.conv1(x1), self.conv2(x2), self.conv3(x3)], dim=1)
+
+class InceptionNeXtBlock(nn.Module):
+    '''http://arxiv.org/abs/2303.16900'''
+
+    def __init__(self, c, mlp_r=4, shortcut=True, ls_init_value=1e-6):
+        super().__init__()
+        self.tokenMixer = tokenMixer(c)
+        self.norm = nn.BatchNorm2d(c)
+        self.feedback = ConvMLP(c, int(mlp_r*c))
+        self.shortcut = shortcut
+        self.gamma = nn.Parameter(ls_init_value * torch.ones(c, requires_grad=True)) if ls_init_value else None
+
+    def forward(self, x:torch.Tensor):
+        y = self.tokenMixer(x)
+        y = self.norm(y)
+        # print(f"INXB:y={y.shape}")
+        y = self.feedback(y)
+        if self.gamma is not None:
+            y = y.mul(self.gamma.reshape(1, -1, 1, 1))
+        return y + x if self.shortcut else y
+
+class Unfold(nn.Module):
+    def __init__(self, k=3):
+        super().__init__()       
+        self.k = k
+        w = torch.eye(k**2)
+        w = w.reshape(k**2, 1, k, k)
+        self.w = nn.Parameter(w, requires_grad=False)  
+        
+    def forward(self, x):
+        b, c, h, w = x.shape
+        x = F.conv2d(x.reshape(b*c, 1, h, w), self.w, stride=1, padding=self.k//2)        
+        return x.reshape(b, c*9, h*w)
+
+class Fold(nn.Module):
+    def __init__(self, k=3):
+        super().__init__()
+        self.k = k
+        w = torch.eye(k**2)
+        w = w.reshape(k**2, 1, k, k)
+        self.w = nn.Parameter(w, requires_grad=False)
+        
+    def forward(self, x):
+        b, _, h, w = x.shape
+        x = F.conv_transpose2d(x, self.w, stride=1, padding=self.k//2)        
+        return x
+
+class StokenAttention(nn.Module):
+    def __init__(self, c, stoken_size, n_iter=1, refine=True, refine_attention=True, num_heads=8):
+        super().__init__()
+        
+        self.n_iter = n_iter
+        self.stoken_size = stoken_size
+        self.refine = refine
+        self.refine_attention = refine_attention  
+        
+        self.s = c ** - 0.5
+        
+        self.unfold = Unfold(3)
+        self.fold = Fold(3)
+        
+        if refine:
+            if refine_attention:
+                self.stoken_refine = Attention(c, num_heads=num_heads, attn_ratio=1)
+            else:
+                self.stoken_refine = nn.Sequential(
+                    nn.Conv2d(c, c, 1, 1, 0),
+                    nn.Conv2d(c, c, 5, 1, 2, groups=c),
+                    nn.Conv2d(c, c, 1, 1, 0)
+                )
+        
+    def stoken_forward(self, x):
+        '''
+           x: (B, C, H, W)
+        '''
+        B, C, H0, W0 = x.shape
+        h, w = self.stoken_size
+        
+        pad_l = pad_t = 0
+        pad_r = (w - W0 % w) % w
+        pad_b = (h - H0 % h) % h
+        if pad_r > 0 or pad_b > 0:
+            x = F.pad(x, (pad_l, pad_r, pad_t, pad_b))
+            
+        _, _, H, W = x.shape
+        hh, ww = H//h, W//w
+
+        stoken_features = F.adaptive_avg_pool2d(x, (hh, ww)) # (B, C, hh, ww)
+        pixel_features = x.reshape(B, C, hh, h, ww, w).permute(0, 2, 4, 3, 5, 1).contiguous().reshape(B, hh*ww, h*w, C)
+        
+        with torch.no_grad():
+            for idx in range(self.n_iter):
+                stoken_features = self.unfold(stoken_features) # (B, C*9, hh*ww)
+                stoken_features = stoken_features.transpose(1, 2).reshape(B, hh*ww, C, 9)
+                affinity_matrix = pixel_features @ stoken_features * self.s # (B, hh*ww, h*w, 9)
+                affinity_matrix = affinity_matrix.softmax(-1) # (B, hh*ww, h*w, 9)
+                affinity_matrix_sum = affinity_matrix.sum(2).transpose(1, 2).reshape(B, 9, hh, ww)
+                affinity_matrix_sum = self.fold(affinity_matrix_sum)
+                if idx < self.n_iter - 1:
+                    stoken_features = pixel_features.transpose(-1, -2) @ affinity_matrix # (B, hh*ww, C, 9)
+                    stoken_features = self.fold(stoken_features.permute(0, 2, 3, 1).contiguous().reshape(B*C, 9, hh, ww)).reshape(B, C, hh, ww)            
+                    stoken_features = stoken_features/(affinity_matrix_sum + 1e-12) # (B, C, hh, ww)
+        
+        stoken_features = pixel_features.transpose(-1, -2) @ affinity_matrix # (B, hh*ww, C, 9)
+        stoken_features = self.fold(stoken_features.permute(0, 2, 3, 1).contiguous().reshape(B*C, 9, hh, ww)).reshape(B, C, hh, ww)            
+        stoken_features = stoken_features/(affinity_matrix_sum.detach() + 1e-12) # (B, C, hh, ww)
+
+        if self.refine:
+            if self.refine_attention:
+                # stoken_features = stoken_features.reshape(B, C, hh*ww).transpose(-1, -2)
+                stoken_features = self.stoken_refine(stoken_features)
+                # stoken_features = stoken_features.transpose(-1, -2).reshape(B, C, hh, ww)
+            else:
+                stoken_features = self.stoken_refine(stoken_features)
+
+        stoken_features = self.unfold(stoken_features) # (B, C*9, hh*ww)
+        stoken_features = stoken_features.transpose(1, 2).reshape(B, hh*ww, C, 9) # (B, hh*ww, C, 9)
+        pixel_features = stoken_features @ affinity_matrix.transpose(-1, -2) # (B, hh*ww, C, h*w)
+        pixel_features = pixel_features.reshape(B, hh, ww, C, h, w).permute(0, 3, 1, 4, 2, 5).contiguous().reshape(B, C, H, W)
+
+        if pad_r > 0 or pad_b > 0:
+            pixel_features = pixel_features[:, :, :H0, :W0]
+        return pixel_features
+    
+    
+    def direct_forward(self, x):
+        B, C, H, W = x.shape
+        stoken_features = x
+        if self.refine:
+            if self.refine_attention:
+                # stoken_features = stoken_features.flatten(2).transpose(-1, -2)
+                stoken_features = self.stoken_refine(stoken_features)
+                # stoken_features = stoken_features.transpose(-1, -2).reshape(B, C, H, W)
+            else:
+                stoken_features = self.stoken_refine(stoken_features)
+        return stoken_features
+        
+    def forward(self, x):
+        if self.stoken_size[0] > 1 or self.stoken_size[1] > 1:
+            return self.stoken_forward(x)
+        else:
+            return self.direct_forward(x)
+
+class StokenAttentionLayer(nn.Module):
+    def __init__(self, c, n_iter, stoken_size, 
+                 num_heads=1, mlp_ratio=4., drop=0.,  drop_path=0., act_layer=nn.GELU, layerscale=False, init_values = 1.0e-5):
+        super().__init__()
+                        
+        self.layerscale = layerscale
+        
+        self.conv = DWConv(c, c, 3)
+                                        
+        self.norm1 = LayerNorm2d(c)
+        self.attn = StokenAttention(c, stoken_size=stoken_size, n_iter=n_iter, num_heads=num_heads)   
+                    
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        
+        self.norm2 = nn.BatchNorm2d(c)
+        self.mlp2 = ConvMLP(c1=c, c_=int(c * mlp_ratio), c2=c, act=act_layer, drop=drop)
+                
+        if layerscale:
+            self.gamma_1 = nn.Parameter(init_values * torch.ones(1, c, 1, 1),requires_grad=True)
+            self.gamma_2 = nn.Parameter(init_values * torch.ones(1, c, 1, 1),requires_grad=True)
+        
+    def forward(self, x):
+        x = x + self.conv(x)
+        if self.layerscale:
+            x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
+            x = x + self.drop_path(self.gamma_2 * self.mlp2(self.norm2(x))) 
+        else:
+            x = x + self.drop_path(self.attn(self.norm1(x)))
+            x = x + self.drop_path(self.mlp2(self.norm2(x)))        
+        return x
+
+class C2PSSA(C2PSA):
+    def __init__(self, c1, c2, n=1, layerscale=True, e=0.5, stoken_size=1, n_iter=1):
+        super().__init__(c1, c2, n, e)
+        self.m = nn.Sequential(*(StokenAttentionLayer(self.c, n_iter=n_iter, stoken_size=(stoken_size, stoken_size), num_heads=self.c//64, layerscale=layerscale) for _ in range(n)))

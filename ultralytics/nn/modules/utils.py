@@ -3,6 +3,7 @@
 
 import copy
 import math
+import warnings
 
 import numpy as np
 import torch
@@ -82,3 +83,101 @@ def multi_scale_deformable_attn_pytorch(
         .view(bs, num_heads * embed_dims, num_queries)
     )
     return output.transpose(1, 2).contiguous()
+
+def normal_init(module, mean=0, std=1, bias=0):
+    if hasattr(module, 'weight') and module.weight is not None:
+        nn.init.normal_(module.weight, mean, std)
+    if hasattr(module, 'bias') and module.bias is not None:
+        nn.init.constant_(module.bias, bias)
+
+def constant_init(module, val, bias=0):
+    if hasattr(module, 'weight') and module.weight is not None:
+        nn.init.constant_(module.weight, val)
+    if hasattr(module, 'bias') and module.bias is not None:
+        nn.init.constant_(module.bias, bias)
+
+def resize(input,
+           size=None,
+           scale_factor=None,
+           mode='nearest',
+           align_corners=None,
+           warning=True):
+    # 若设置了警告并且使用 align_corners, 则给出警告
+    if warning:
+        if size is not None and align_corners:
+            input_h, input_w = tuple(int(x) for x in input.shape[2:])  # 获取输入的高宽
+            output_h, output_w = tuple(int(x) for x in size)  # 获取输出的高宽
+            # 判断插值条件, 给出警告提示
+            if output_h > input_h or output_w > input_w:
+                if ((output_h > 1 and output_w > 1 and input_h > 1
+                     and input_w > 1) and (output_h - 1) % (input_h - 1)
+                        and (output_w - 1) % (input_w - 1)):
+                    warnings.warn(
+                        f'When align_corners={align_corners}, '
+                        'the output would more aligned if '
+                        f'input size {(input_h, input_w)} is `x+1` and '
+                        f'out size {(output_h, output_w)} is `nx+1`')
+    # 使用 PyTorch 提供的插值函数
+    return F.interpolate(input, size, scale_factor, mode, align_corners)
+
+def hamming2D(M, N):
+    """
+    生成二维Hamming窗
+
+    参数：
+    - M: 窗口的行数
+    - N: 窗口的列数
+
+    返回：
+    - 二维Hamming窗
+    """
+    hamming_x = np.hamming(M)  # 生成水平 Hamming 窗
+    hamming_y = np.hamming(N)  # 生成垂直 Hamming 窗
+    hamming_2d = np.outer(hamming_x, hamming_y)  # 通过外积生成二维 Hamming 窗
+    return hamming_2d
+
+def compute_similarity(input_tensor, k=3, dilation=1, sim='cos'):
+    """
+    计算输入张量中每一点与周围KxK范围内的点的余弦相似度。
+
+    参数：
+    - input_tensor: 输入张量, 形状为[B, C, H, W]
+    - k: 范围大小, 表示周围KxK范围内的点
+    - dilation: 膨胀系数, 用于调整卷积的感受野
+    - sim: 使用的相似度类型, 默认为余弦相似度 'cos'
+
+    返回：
+    - 输出张量, 形状为[B, KxK-1, H, W]
+    """
+    B, C, H, W = input_tensor.shape  # 获取批量大小、通道数、高度和宽度
+    
+    # 使用 unfold 展开张量, 将每个像素周围的 KxK 区域展平
+    unfold_tensor = F.unfold(input_tensor, k, padding=(k // 2) * dilation, dilation=dilation)  # B, CxKxK, HW
+    unfold_tensor = unfold_tensor.reshape(B, C, k ** 2, H, W)  # 将张量重塑为 [B, C, KxK, H, W] 形状
+
+    # 计算中心像素与周围像素的余弦相似度
+    if sim == 'cos':
+        similarity = F.cosine_similarity(unfold_tensor[:, :, k * k // 2:k * k // 2 + 1], unfold_tensor[:, :, :], dim=1)
+    # 如果使用点积相似度
+    elif sim == 'dot':
+        similarity = unfold_tensor[:, :, k * k // 2:k * k // 2 + 1] * unfold_tensor[:, :, :]
+        similarity = similarity.sum(dim=1)
+    else:
+        raise NotImplementedError  # 如果提供的相似度计算类型不被支持, 抛出异常
+
+    # 移除中心像素的相似度, 只保留周围的 KxK-1 的相似度值
+    similarity = torch.cat((similarity[:, :k * k // 2], similarity[:, k * k // 2 + 1:]), dim=1)
+
+    # 将相似度结果调整为 [B, KxK-1, H, W] 的形状
+    similarity = similarity.view(B, k * k - 1, H, W)
+    return similarity  # 返回相似度结果
+   
+def carafe(x:torch.Tensor, mask:torch.Tensor|None=None, k=5, g=1, s=2)->torch.Tensor:
+    b, c, h, w = x.shape
+    h_, w_ = h*s, w*s
+    assert mask is not None
+    # print(f"fCARAFE:x={x.shape}, mask={mask.shape}, s={s}")
+    x = F.upsample(x, scale_factor=s, mode='nearest')
+    x = F.unfold(x, kernel_size=k, dilation=s, padding=k//2*s).view(b, c, -1, h_, w_)
+    # print(f"fCARAFE:x={x.shape}")
+    return torch.einsum('bkhw,bckhw->bchw', [mask, x])

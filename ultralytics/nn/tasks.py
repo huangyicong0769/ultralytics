@@ -42,6 +42,7 @@ from ultralytics.nn.modules import (
     Conv2,
     ConvTranspose,
     Detect,
+    ARBDetect,
     DWConv,
     DWConvTranspose2d,
     Focus,
@@ -62,6 +63,24 @@ from ultralytics.nn.modules import (
     WorldDetect,
     v10Detect,
     CBAM,
+    SEAttention,
+    MCA,
+    pMCA,
+    # C2fAttn,
+    C3kAttn,
+    C3k2Attn,
+    C2fAttnELAN4,
+    LowFAM,
+    LowIFM,
+    Split,
+    HighFAM,
+    HighIFM,
+    LowLAF,
+    HiLAF,
+    Inject,
+    CARAFE,
+    FreqFusion,
+    C2PSSA,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -333,6 +352,12 @@ class DetectionModel(BaseModel):
                 if self.end2end:
                     return self.forward(x)["one2many"]
                 return self.forward(x)[0] if isinstance(m, (Segment, Pose, OBB)) else self.forward(x)
+
+            # result = _forward(torch.zeros(1, ch, s, s))
+            # print(f"_forward result type: {type(result)}")
+            # print(f"_forward result: {result}")
+
+            # input("Pause")
 
             m.stride = torch.tensor([s / x.shape[-2] for x in _forward(torch.zeros(1, ch, s, s))])  # forward
             self.stride = m.stride
@@ -654,7 +679,8 @@ class WorldModel(DetectionModel):
             if profile:
                 self._profile_one_layer(m, x, dt)
             if isinstance(m, C2fAttn):
-                x = m(x, txt_feats)
+                # x = m(x, txt_feats)
+                x = m(x)
             elif isinstance(m, WorldDetect):
                 x = m(x, ori_txt_feats)
             elif isinstance(m, ImagePoolingAttn):
@@ -983,8 +1009,12 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C1,
             C2,
             C2f,
+            # C2fMCA,
+            C3kAttn,
             C3k2,
+            C3k2Attn,
             RepNCSPELAN4,
+            C2fAttnELAN4,
             ELAN1,
             ADown,
             AConv,
@@ -1000,23 +1030,31 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             PSA,
             SCDown,
             C2fCIB,
+            SEAttention,
+            C2PSSA,
         }:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
-            if m is C2fAttn:
-                args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)  # embed channels
-                args[2] = int(
-                    max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2]
-                )  # num heads
+            # if m is C2fAttn:
+            #     args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)  # embed channels
+            #     args[2] = int(
+            #         max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2]
+            #     )  # num heads
 
+            if m in {C2fAttn, C2fAttnELAN4, C3kAttn, C3k2Attn}:
+                args[1] = getattr(torch.nn, args[1][1:]) if "nn." in args[1] else globals()[args[1]]
             args = [c1, c2, *args[1:]]
+
             if m in {
                 BottleneckCSP,
                 C1,
                 C2,
                 C2f,
+                # C2fMCA,
+                C3kAttn,
                 C3k2,
+                C3k2Attn,
                 C2fAttn,
                 C3,
                 C3TR,
@@ -1026,13 +1064,14 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 C2fPSA,
                 C2fCIB,
                 C2PSA,
+                C2PSSA,
             }:
                 args.insert(2, n)  # number of repeats
                 n = 1
-            if m is C3k2:  # for M/L/X sizes
+            if m in {C3k2, C3k2Attn}:  # for M/L/X sizes
                 legacy = False
                 if scale in "mlx":
-                    args[3] = True
+                    args[3 if m is C3k2 else 4] = True
         elif m is AIFI:
             args = [ch[f], *args]
         elif m in {HGStem, HGBlock}:
@@ -1045,9 +1084,38 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             c2 = args[1] if args[3] else args[1] * 4
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
-        elif m is Concat:
-            c2 = sum(ch[x] for x in f)
-        elif m in {Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect}:
+        elif m in {Concat, LowFAM, HighFAM}:
+            if m is LowFAM:
+                args = [ch[f[0]], *args]
+            if m is Concat and len(args) > 1:
+                c2 = sum(ch[f][x] for x in args[1:])
+                # print(f"Concat: c2={c2} = sum{[ch[f][x] for x in args[1:]]}")
+                args = args[:1]
+            else:
+                c2 = sum(ch[x] for x in f)
+        elif m in {LowIFM, HighIFM}:
+            c1, c2 = ch[f], args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels)*width, 8)
+            args = [c1, c2, *args[1:]]
+        elif m in {LowLAF}:
+            c1, c2 = ch[f[-2]], args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels)*width, 8)
+            c_s = sum(ch[x] for x in f)
+            args = [c1, c2, c_s, ch[f[0]], *args[1:]]
+        elif m in {HiLAF}:
+            c2 = args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels)*width, 8)
+            args = [sum(ch[x] for x in f), c2]
+        elif m is Inject:
+            index = args[1]
+            c1, c2 = ch[f[1]][index], args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels)*width, 8)
+            args = [c1, c2, *args[1:]]
+        elif m in {Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect, ARBDetect}:
             args.append([ch[x] for x in f])
             if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
@@ -1061,9 +1129,20 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             args = [c1, c2, *args[1:]]
         elif m is CBFuse:
             c2 = ch[f[-1]]
+        elif m is Split:
+            c2 = [(make_divisible(min(arg, max_channels)*width, 8) if arg != nc else arg) for arg in args]
+            args = [c2]
         elif m in {CBAM}:
             c2 = ch[f]
             args = [c2, *args]
+        elif m is CARAFE:
+            c1 = ch[f]
+            c2 = c1
+            args = [c1, *args[1:]]
+        elif m is FreqFusion:
+            c1 = [ch[f[0]], ch[f[1]]]
+            c2 = [ch[f[0]], ch[f[0]], ch[f[1]]]
+            args = [ch[f[0]], ch[f[1]], *args[2:]]
         else:
             c2 = ch[f]
 
@@ -1071,6 +1150,10 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         t = str(m)[8:-2].replace("__main__.", "")  # module type
         m_.np = sum(x.numel() for x in m_.parameters())  # number params
         m_.i, m_.f, m_.type = i, f, t  # attach index, 'from' index, type
+        # if m in {Inject, HiLAF}:
+        #     m_.input_nums = len(f)
+        # else:
+        #     m_.input_nums = 1
         if verbose:
             LOGGER.info(f"{i:>3}{str(f):>20}{n_:>3}{m_.np:10.0f}  {t:<45}{str(args):<30}")  # print
         save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist

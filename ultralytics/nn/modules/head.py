@@ -9,13 +9,14 @@ import torch.nn as nn
 from torch.nn.init import constant_, xavier_uniform_
 
 from ultralytics.utils.tal import TORCH_1_10, dist2bbox, dist2rbox, make_anchors
+from ultralytics.utils.ops import make_divisible
 
 from .block import DFL, BNContrastiveHead, ContrastiveHead, Proto
 from .conv import Conv, DWConv
 from .transformer import MLP, DeformableTransformerDecoder, DeformableTransformerDecoderLayer
 from .utils import bias_init_with_prob, linear_init
 
-__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect"
+__all__ = "Detect", "Segment", "Pose", "Classify", "OBB", "RTDETRDecoder", "v10Detect", "ARBDetect"
 
 
 class Detect(nn.Module):
@@ -164,6 +165,168 @@ class Detect(nn.Module):
         scores, index = scores.flatten(1).topk(min(max_det, anchors))
         i = torch.arange(batch_size)[..., None]  # batch indices
         return torch.cat([boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float()], dim=-1)
+
+class DualDetect(nn.Module):
+    # YOLO Detect head for detection models
+    dynamic = False  # force grid reconstruction
+    export = False  # export mode
+    shape = None
+    anchors = torch.empty(0)  # init
+    strides = torch.empty(0)  # init
+
+    def __init__(self, nc=80, ch=(), inplace=True):  # detection layer
+        super().__init__()
+        self.nc = nc  # number of classes
+        self.nl = len(ch) // 2  # number of detection layers
+        self.reg_max = 16
+        self.no = nc + self.reg_max * 4  # number of outputs per anchor
+        self.inplace = inplace  # use inplace ops (e.g. slice assignment)
+        self.stride = torch.zeros(self.nl)  # strides computed during build
+
+        c2, c3 = make_divisible(max((ch[0] // 4, self.reg_max * 4, 16)), 4), max((ch[0], min((self.nc * 2, 128))))  # channels
+        c4, c5 = make_divisible(max((ch[self.nl] // 4, self.reg_max * 4, 16)), 4), max((ch[self.nl], min((self.nc * 2, 128))))  # channels
+        self.cv2 = nn.ModuleList(
+            nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3, g=4), nn.Conv2d(c2, 4 * self.reg_max, 1, groups=4)) for x in ch[:self.nl])
+        self.cv3 = nn.ModuleList(
+            nn.Sequential(Conv(x, c3, 3), Conv(c3, c3, 3), nn.Conv2d(c3, self.nc, 1)) for x in ch[:self.nl])
+        self.cv4 = nn.ModuleList(
+            nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3, g=4), nn.Conv2d(c4, 4 * self.reg_max, 1, groups=4)) for x in ch[self.nl:])
+        self.cv5 = nn.ModuleList(
+            nn.Sequential(Conv(x, c5, 3), Conv(c5, c5, 3), nn.Conv2d(c5, self.nc, 1)) for x in ch[self.nl:])
+        self.dfl = DFL(self.reg_max)
+        self.dfl2 = DFL(self.reg_max)
+
+    def forward(self, x):
+        shape = x[0].shape  # BCHW
+        d1 = []
+        d2 = []
+        for i in range(self.nl):
+            d1.append(torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1))
+            d2.append(torch.cat((self.cv4[i](x[self.nl+i]), self.cv5[i](x[self.nl+i])), 1))
+        if self.training:
+            return [d1, d2]
+        elif self.dynamic or self.shape != shape:
+            self.anchors, self.strides = (d1.transpose(0, 1) for d1 in make_anchors(d1, self.stride, 0.5))
+            self.shape = shape
+
+        box, cls = torch.cat([di.view(shape[0], self.no, -1) for di in d1], 2).split((self.reg_max * 4, self.nc), 1)
+        dbox = dist2bbox(self.dfl(box), self.anchors.unsqueeze(0), xywh=True, dim=1) * self.strides
+        box2, cls2 = torch.cat([di.view(shape[0], self.no, -1) for di in d2], 2).split((self.reg_max * 4, self.nc), 1)
+        dbox2 = dist2bbox(self.dfl2(box2), self.anchors.unsqueeze(0), xywh=True, dim=1) * self.strides
+        y = [torch.cat((dbox, cls.sigmoid()), 1), torch.cat((dbox2, cls2.sigmoid()), 1)]
+        return y if self.export else (y, [d1, d2])
+        #y = torch.cat((dbox2, cls2.sigmoid()), 1)
+        #return y if self.export else (y, d2)
+        #y1 = torch.cat((dbox, cls.sigmoid()), 1)
+        #y2 = torch.cat((dbox2, cls2.sigmoid()), 1)
+        #return [y1, y2] if self.export else [(y1, d1), (y2, d2)]
+        #return [y1, y2] if self.export else [(y1, y2), (d1, d2)]
+
+    def bias_init(self):
+        # Initialize Detect() biases, WARNING: requires stride availability
+        m = self  # self.model[-1]  # Detect() module
+        # cf = torch.bincount(torch.tensor(np.concatenate(dataset.labels, 0)[:, 0]).long(), minlength=nc) + 1
+        # ncf = math.log(0.6 / (m.nc - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # nominal class frequency
+        for a, b, s in zip(m.cv2, m.cv3, m.stride):  # from
+            a[-1].bias.data[:] = 1.0  # box
+            b[-1].bias.data[:m.nc] = math.log(5 / m.nc / (640 / s) ** 2)  # cls (5 objects and 80 classes per 640 image)
+        for a, b, s in zip(m.cv4, m.cv5, m.stride):  # from
+            a[-1].bias.data[:] = 1.0  # box
+            b[-1].bias.data[:m.nc] = math.log(5 / m.nc / (640 / s) ** 2)  # cls (5 objects and 80 classes per 640 image)
+
+class ARBDetect(Detect):
+    """YOLO Detect head with Auxiliary Reversible Branch for detection models."""
+    def __init__(self, nc=80, ch=()):
+        super().__init__(nc, ch[:len(ch)//2])
+        self.nc = nc
+        self.nl = len(ch)//2
+        self.reg_max = 16
+        self.no = nc + self.reg_max * 4
+        self.stride = torch.zeros(self.nl)
+
+        c2, c3 = max((16, ch[0] // 4, self.reg_max * 4)), max(ch[0], min(self.nc * 2, 128))  # channels
+        self.cv2 = nn.ModuleList(
+            nn.Sequential(Conv(x, c2, 3), Conv(c2, c2, 3), nn.Conv2d(c2, 4 * self.reg_max, 1)) for x in ch[:self.nl]
+        )
+        self.cv3 = nn.ModuleList(
+            nn.Sequential(
+                nn.Sequential(DWConv(x, x, 3), Conv(x, c3, 1)),
+                nn.Sequential(DWConv(c3, c3, 3), Conv(c3, c3, 1)),
+                nn.Conv2d(c3, self.nc, 1),
+            )
+            for x in ch[:self.nl]
+        )
+
+        c4, c5 = max((16, ch[self.nl] // 4, self.reg_max * 4)), max(ch[self.nl], min(self.nc * 2, 128))  # channels
+        self.cv4 = nn.ModuleList(
+            nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, 4 * self.reg_max, 1)) for x in ch[self.nl:]
+        )
+        self.cv5 = nn.ModuleList(
+            nn.Sequential(
+                nn.Sequential(DWConv(x, x, 3), Conv(x, c5, 1)),
+                nn.Sequential(DWConv(c5, c5, 3), Conv(c5, c5, 1)),
+                nn.Conv2d(c5, self.nc, 1),
+            )
+            for x in ch[self.nl:]
+        )
+
+        self.dfl1 = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
+        self.dfl2 = DFL(self.reg_max) if self.reg_max > 1 else nn.Identity()
+
+    def forward(self, x):
+        shape = x[0].shape
+        d1, d2 = [], []
+
+        for i in range(self.nl):
+            d1.append(torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1))
+            d2.append(torch.cat((self.cv4[i](x[self.nl + i]), self.cv5[i](x[self.nl + i])), 1))
+        
+        if self.training:
+            return [d1, d2]
+        
+        if self.dynamic or self.shape != shape:
+            self.anchors, self.strides = (d1.transpose(0, 1) for d1 in make_anchors(d1, self.stride, 0.5))
+            self.shape = shape
+
+        d1_cat = torch.cat([di.view(shape[0], self.no, -1) for di in d1], 2)
+        d2_cat = torch.cat([di.view(shape[0], self.no, -1) for di in d2], 2)
+
+        if self.export and self.format in {"saved_model", "pb", "tflite", "edgetpu", "tfjs"}:  # avoid TF FlexSplitV ops
+            box1 = d1_cat[:, : self.reg_max * 4]
+            cls1 = d1_cat[:, self.reg_max * 4 :]
+            box2 = d2_cat[:, : self.reg_max * 4]
+            cls2 = d2_cat[:, self.reg_max * 4 :]
+        else:
+            box1, cls1 = d1_cat.split((self.reg_max * 4, self.nc), 1)
+            box2, cls2 = d2_cat.split((self.reg_max * 4, self.nc), 1)
+
+        if self.export and self.format in {"tflite", "edgetpu"}:
+            # Precompute normalization factor to increase numerical stability
+            # See https://github.com/ultralytics/ultralytics/issues/7371
+            grid_h = shape[2]
+            grid_w = shape[3]
+            grid_size = torch.tensor([grid_w, grid_h, grid_w, grid_h], device=box1.device).reshape(1, 4, 1)
+            norm = self.strides / (self.stride[0] * grid_size)
+            dbox1 = self.decode_bboxes(self.dfl(box1) * norm, self.anchors.unsqueeze(0) * norm[:, :2])
+            dbox2 = self.decode_bboxes(self.dfl(box2) * norm, self.anchors.unsqueeze(0) * norm[:, :2])
+        else:
+            dbox1 = self.decode_bboxes(self.dfl(box1), self.anchors.unsqueeze(0)) * self.strides
+            dbox2 = self.decode_bboxes(self.dfl(box2), self.anchors.unsqueeze(0)) * self.strides
+
+        y = torch.cat((dbox1, cls1.sigmoid()), 1), torch.cat((dbox2, cls2.sigmoid()), 1)
+        return y if self.export else (y, d1 + d2)
+    
+    def bias_init(self):
+        m = self  # self.model[-1]  # Detect() module
+        # cf = torch.bincount(torch.tensor(np.concatenate(dataset.labels, 0)[:, 0]).long(), minlength=nc) + 1
+        # ncf = math.log(0.6 / (m.nc - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # nominal class frequency
+        for a, b, s in zip(m.cv2, m.cv3, m.stride):  # from
+            a[-1].bias.data[:] = 1.0  # box
+            b[-1].bias.data[:m.nc] = math.log(5 / m.nc / (640 / s) ** 2)  # cls (5 objects and 80 classes per 640 image)
+        for a, b, s in zip(m.cv4, m.cv5, m.stride):  # from
+            a[-1].bias.data[:] = 1.0  # box
+            b[-1].bias.data[:m.nc] = math.log(5 / m.nc / (640 / s) ** 2)  # cls (5 objects and 80 classes per 640 image)
+
 
 
 class Segment(Detect):
