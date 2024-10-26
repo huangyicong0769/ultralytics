@@ -1151,9 +1151,10 @@ class StdPool(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, x):
+    def forward(self, x:torch.Tensor):
         b, c, _, _ = x.size()
-        std = x.view(b, c, -1).std(dim=2, keepdim=True)
+        x = x.nan_to_num(0.0)
+        std = x.view(b, c, -1).std(dim=2, keepdim=True, unbiased=False).nan_to_num(0.0)
         std = std.reshape(b, c, 1, 1)
         return std
         
@@ -1269,10 +1270,10 @@ class MSSA(MCA):
     def forward(self, x):
         x_h, x_w, x_c = self.transplit(x)
         
-        y = torch.cat([x_h, x_w, x_c], dim=1)
+        y = torch.cat([x_h, x_w, x_c], dim=1).nan_to_num(0.0)
         y_avg = y.mean(dim=1, keepdim=True)
         y_max, _ = y.max(dim=1, keepdim=True)
-        y_std = y.std(dim=1, keepdim=True)
+        y_std = y.std(dim=1, keepdim=True, unbiased=False).nan_to_num(0.0)
         y = torch.cat([y_avg, y_max, y_std], dim=1)
         y = self.cv1(y)
 
