@@ -75,6 +75,7 @@ from .block import (
     CARAFE,
     FreqFusion,
     C2PSSA,
+    C2fLSK,
 )
 from .conv import (
     CBAM,
@@ -195,4 +196,5 @@ __all__ = (
     "CARAFE",
     "FreqFusion",
     "C2PSSA",
+    "C2fLSK",
 )

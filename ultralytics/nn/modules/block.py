@@ -71,6 +71,7 @@ __all__ = (
     "FreqFusion",
     "C2PSSA",
     "ConvHighIFM",
+    "C2fLSK",
 )
 
 
@@ -2012,3 +2013,37 @@ class C2PSSA(C2PSA):
     def __init__(self, c1, c2, n=1, layerscale=True, e=0.5, stoken_size=1, n_iter=1):
         super().__init__(c1, c2, n, e)
         self.m = nn.Sequential(*(StokenAttentionLayer(self.c, n_iter=n_iter, stoken_size=(stoken_size, stoken_size), num_heads=self.c//64, layerscale=layerscale) for _ in range(n)))
+
+class LSKblock(nn.Module):
+    ''''http://arxiv.org/abs/2303.09030'''
+
+    def __init__(self, c):
+        super().__init__()
+        self.cv0 = Conv(c, c, 5, p=2, g=c)
+        self.cvsp = Conv(c, c, 7, s=1, p=9, g=c, d=3)
+        self.cv1 = Conv(c, c//2, 1)
+        self.cv2 = Conv(c, c//2, 1)
+        self.cvsq = Conv(2, 2, 7, p=3)
+        self.cv3 = Conv(c//2, c, 1)
+        self.bn = nn.BatchNorm2d(c)
+
+    def forward(self, x):
+        x1 = self.cv0(x)
+        x2 = self.cvsp(x1)
+        x1 = self.cv1(x1)
+        x2 = self.cv2(x2)
+
+        y = torch.cat([x1, x2], dim=1)
+        y_avg = y.mean(dim=1, keepdim=True)
+        y_max, _ = y.max(dim=1, keepdim=True)
+        y = torch.cat([y_avg, y_max], dim=1)
+        y = self.cvsq(y).sigmoid()
+
+        y = x1 * y[:,0,:,:].unsqueeze(1) + x2 * y[:,1,:,:].unsqueeze(1)
+        y = self.cv3(y)
+        return self.bn(x * y)
+    
+class C2fLSK(C2f):
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
+        super().__init__(c1, c2, n, shortcut, g, e)
+        self.m = nn.ModuleList(LSKblock(self.c) for _ in range(n))
