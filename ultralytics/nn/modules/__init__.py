@@ -59,6 +59,7 @@ from .block import (
     SEAttention,
     MCA,
     pMCA,
+    MSSA,
     # C2fMCA,
     C3kAttn,
     C3k2Attn,
@@ -179,7 +180,8 @@ __all__ = (
     "PSA",
     "SEAttention",
     "MCA",
-    "pMCA"
+    "pMCA",
+    "MSSA",
     # "C2fAttn",
     "C3kAttn",
     "C3k2Attn",

@@ -66,6 +66,7 @@ from ultralytics.nn.modules import (
     SEAttention,
     MCA,
     pMCA,
+    MSSA,
     # C2fAttn,
     C2fLSK,
     C3kAttn,

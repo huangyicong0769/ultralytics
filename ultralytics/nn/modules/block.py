@@ -72,6 +72,7 @@ __all__ = (
     "C2PSSA",
     "ConvHighIFM",
     "C2fLSK",
+    "MSSA",
 )
 
 
@@ -1221,7 +1222,7 @@ class MCA(nn.Module):
 
             self.c_hw = MCAGate(k=k)
 
-    def forward(self, x):
+    def transplit(self, x):
         x_h = x.permute(0, 2, 1, 3).contiguous()
         x_h = self.h_cw(x_h)
         x_h = x_h.permute(0, 2, 1, 3).contiguous()
@@ -1232,8 +1233,16 @@ class MCA(nn.Module):
 
         if not self.no_spatial:
             x_c = self.c_hw(x)
+            return x_h, x_w, x_c
+        else:
+            return x_h, x_w
+
+    def forward(self, x):
+        if not self.no_spatial:
+            x_h, x_w, x_c = self.transplit(x)
             return 1/3*(x_h+x_w+x_c)
         else:
+            x_h, x_w = self.transplit(x)
             return 1/2*(x_h+x_w)
 
 class pMCA(MCA):
@@ -1242,19 +1251,35 @@ class pMCA(MCA):
         self.weights = [nn.Parameter(torch.tensor(1., requires_grad=True)) for _ in range(2 if no_spatial else 3)]
     
     def forward(self, x):
-        x_h = x.permute(0, 2, 1, 3).contiguous()
-        x_h = self.h_cw(x_h)
-        x_h = x_h.permute(0, 2, 1, 3).contiguous()
-
-        x_w = x.permute(0, 3, 2, 1).contiguous()
-        x_w = self.w_hc(x_w)
-        x_w = x_w.permute(0, 3, 2, 1).contiguous()
-
         if not self.no_spatial:
-            x_c = self.c_hw(x)
+            x_h, x_w, x_c = self.transplit(x)
             return 1/3*(x_h*self.weights[0]+x_w*self.weights[1]+x_c*self.weights[2])
         else:
+            x_h, x_w = self.transplit(x)
             return 1/2*(x_h*self.weights[0]+x_w*self.weights[1])
+
+class MSSA(MCA):
+    '''Multidimensional Spatial Selective Attention Module'''
+    def __init__(self, c1, no_spatial=False):
+        assert no_spatial == False
+        super().__init__(c1, no_spatial)
+        self.cv1 = Conv(3, 3, 7)
+        # self.cv2 = Conv(c1, c1, 1)
+
+    def forward(self, x):
+        x_h, x_w, x_c = self.transplit(x)
+        
+        y = torch.cat([x_h, x_w, x_c], dim=1)
+        y_avg = y.mean(dim=1, keepdim=True)
+        y_max, _ = y.max(dim=1, keepdim=True)
+        y_std = y.std(dim=1, keepdim=True)
+        y = torch.cat([y_avg, y_max, y_std], dim=1)
+        y = self.cv1(y)
+
+        y = 1/3*(x_h * y[:,0,:,:].unsqueeze(1) + x_w * y[:,1,:,:].unsqueeze(1) + x_c * y[:,2,:,:].unsqueeze(1))
+        # y = self.cv2(y)
+        return y
+
 
 class BottleneckAttn(Bottleneck):
     """Bottleneck with Attention."""
@@ -2023,7 +2048,7 @@ class LSKblock(nn.Module):
         self.cvsp = Conv(c, c, 7, s=1, p=9, g=c, d=3)
         self.cv1 = Conv(c, c//2, 1)
         self.cv2 = Conv(c, c//2, 1)
-        self.cvsq = Conv(2, 2, 7, p=3)
+        self.cvsq = Conv(3, 2, 7, p=3)
         self.cv3 = Conv(c//2, c, 1)
         self.bn = nn.BatchNorm2d(c)
 
@@ -2036,7 +2061,8 @@ class LSKblock(nn.Module):
         y = torch.cat([x1, x2], dim=1)
         y_avg = y.mean(dim=1, keepdim=True)
         y_max, _ = y.max(dim=1, keepdim=True)
-        y = torch.cat([y_avg, y_max], dim=1)
+        y_std = y.std(dim=1, keepdim=True)
+        y = torch.cat([y_avg, y_max, y_std], dim=1)
         y = self.cvsq(y).sigmoid()
 
         y = x1 * y[:,0,:,:].unsqueeze(1) + x2 * y[:,1,:,:].unsqueeze(1)
