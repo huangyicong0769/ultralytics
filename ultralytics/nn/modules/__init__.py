@@ -75,6 +75,7 @@ from .block import (
     Inject,
     CARAFE,
     FreqFusion,
+    C2INXB,
     C2PSSA,
     C2fLSK,
 )
@@ -197,6 +198,7 @@ __all__ = (
     "Inject",
     "CARAFE",
     "FreqFusion",
+    "C2INXB",
     "C2PSSA",
     "C2fLSK",
 )

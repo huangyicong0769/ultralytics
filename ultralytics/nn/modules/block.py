@@ -69,6 +69,7 @@ __all__ = (
     "Inject",
     "CARAFE"
     "FreqFusion",
+    "C2INXB",
     "C2PSSA",
     "ConvHighIFM",
     "C2fLSK",
@@ -1463,7 +1464,7 @@ class HighIFM(ConvHighIFM):
     def __init__(self, c1, c2, n=1, e=0.5, num_head=4):
         super().__init__(c1, c2, n, e)
         c_ = int(c2*e)
-        self.m = nn.Sequential(*(StokenAttentionLayer(c_, 1, (1, 1), num_head) for _ in range(n)))
+        self.m = nn.Sequential(*(StokenAttentionLayer(c_, 1, (1, 1), num_head, drop=0.1, layerscale=True) for _ in range(n)))
 
 class LowLAF(nn.Module):
     """Low-stage lightweight adjacent layer fusion module"""
@@ -1881,6 +1882,11 @@ class InceptionNeXtBlock(nn.Module):
         if self.gamma is not None:
             y = y.mul(self.gamma.reshape(1, -1, 1, 1))
         return y + x if self.shortcut else y
+
+class C2INXB(C2fPSA):
+    def __init__(self, c1, c2, n=1, e=0.5):
+        super().__init__(c1, c2, n, e)
+        self.m = nn.Sequential(*(InceptionNeXtBlock(self.c) for _ in range(n)))
 
 class Unfold(nn.Module):
     def __init__(self, k=3):
