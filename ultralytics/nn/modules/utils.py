@@ -190,4 +190,4 @@ def spatial_selective(x:list[torch.Tensor], act:callable=nn.Identity())->list[to
         y.std(dim=1, keepdim=True, unbiased=False).nan_to_num(0.0)
     ], dim=1)
     y_feat = act(y_feat)
-    return [xi * y[:,i,:,:].unsqueeze(1) for i, xi in enumerate(x)]
+    return [xi * y_feat[:,i,:,:].unsqueeze(1) for i, xi in enumerate(x)]
