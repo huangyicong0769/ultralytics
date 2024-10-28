@@ -2055,7 +2055,7 @@ class LSKblock(nn.Module):
         self.cvsp = Conv(c, c, 7, s=1, p=9, g=c, d=3)
         self.cv1 = Conv(c, c//2, 1)
         self.cv2 = Conv(c, c//2, 1)
-        self.cvsq = Conv(3, 2, 7, p=3)
+        self.cvsq = Conv(3, 2, 7, p=3, act=nn.Sigmoid())
         self.cv3 = Conv(c//2, c, 1)
         self.bn = nn.BatchNorm2d(c)
 
@@ -2068,9 +2068,9 @@ class LSKblock(nn.Module):
         y = torch.cat([x1, x2], dim=1)
         y_avg = y.mean(dim=1, keepdim=True)
         y_max, _ = y.max(dim=1, keepdim=True)
-        y_std = y.std(dim=1, keepdim=True)
+        y_std = y.std(dim=1, keepdim=True, unbiased=False).nan_to_num(0.0)
         y = torch.cat([y_avg, y_max, y_std], dim=1)
-        y = self.cvsq(y).sigmoid()
+        y = self.cvsq(y)
 
         y = x1 * y[:,0,:,:].unsqueeze(1) + x2 * y[:,1,:,:].unsqueeze(1)
         y = self.cv3(y)
