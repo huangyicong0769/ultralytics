@@ -73,9 +73,11 @@ from ultralytics.nn.modules import (
     C3k2Attn,
     C2fAttnELAN4,
     LowFAM,
+    LowFSAM,
     LowIFM,
     Split,
     HighFAM,
+    HighFSAM,
     HighIFM,
     ConvHighIFM,
     LowLAF,
@@ -1092,8 +1094,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             c2 = args[1] if args[3] else args[1] * 4
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
-        elif m in {Concat, LowFAM, HighFAM}:
-            if m is LowFAM:
+        elif m in {Concat, LowFAM, LowFSAM, HighFAM, HighFSAM}:
+            if m in {LowFAM, LowFSAM}:
                 args = [ch[f[0]], *args]
             if m is Concat and len(args) > 1:
                 c2 = sum(ch[f][x] for x in args[1:])

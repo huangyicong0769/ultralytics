@@ -181,3 +181,13 @@ def carafe(x:torch.Tensor, mask:torch.Tensor|None=None, k=5, g=1, s=2)->torch.Te
     x = F.unfold(x, kernel_size=k, dilation=s, padding=k//2*s).view(b, c, -1, h_, w_)
     # print(f"fCARAFE:x={x.shape}")
     return torch.einsum('bkhw,bckhw->bchw', [mask, x])
+
+def spatial_selective(x:list[torch.Tensor], act:callable=nn.Identity())->list[torch.Tensor]:
+    y = torch.cat(x, dim=1)
+    y_feat = torch.cat([
+        y.mean(dim=1, keepdim=True),
+        y.max(dim=1, keepdim=True)[0],
+        y.std(dim=1, keepdim=True, unbiased=False).nan_to_num(0.0)
+    ], dim=1)
+    y_feat = act(y_feat)
+    return [xi * y[:,i,:,:].unsqueeze(1) for i, xi in enumerate(x)]

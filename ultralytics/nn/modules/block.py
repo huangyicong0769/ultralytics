@@ -9,7 +9,7 @@ from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock, MLPBlock, LayerNorm2d, MLP, DropPath
-from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe
+from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe, spatial_selective
 
 from math import log2
 from typing import Literal
@@ -60,9 +60,11 @@ __all__ = (
     "C3k2MCA",
     "C2fMCAELAN4",
     "LowFAM",
+    "LowFSAM",
     "LowIFM",
     "Split",
     "HighFAM",
+    "HighFSAM",
     "HighIFM",
     "LowLAF",
     "HiLAF",
@@ -1241,11 +1243,9 @@ class MCA(nn.Module):
 
     def forward(self, x):
         if not self.no_spatial:
-            x_h, x_w, x_c = self.transplit(x)
-            return 1/3*(x_h+x_w+x_c)
+            return 1/3*sum(self.transplit(x))
         else:
-            x_h, x_w = self.transplit(x)
-            return 1/2*(x_h+x_w)
+            return 1/2*sum(self.transplit(x))
 
 class pMCA(MCA):
     def __init__(self, c, no_spatial=False):
@@ -1266,21 +1266,10 @@ class MSSA(MCA):
         assert no_spatial == False
         super().__init__(c1, no_spatial)
         self.cv1 = Conv(3, 3, 7)
-        # self.cv2 = Conv(c1, c1, 1)
+        self.bn = nn.BatchNorm2d(c1)
 
     def forward(self, x):
-        x_h, x_w, x_c = self.transplit(x)
-        
-        y = torch.cat([x_h, x_w, x_c], dim=1).nan_to_num(0.0)
-        y_avg = y.mean(dim=1, keepdim=True)
-        y_max, _ = y.max(dim=1, keepdim=True)
-        y_std = y.std(dim=1, keepdim=True, unbiased=False).nan_to_num(0.0)
-        y = torch.cat([y_avg, y_max, y_std], dim=1)
-        y = self.cv1(y)
-
-        y = 1/3*(x_h * y[:,0,:,:].unsqueeze(1) + x_w * y[:,1,:,:].unsqueeze(1) + x_c * y[:,2,:,:].unsqueeze(1))
-        # y = self.cv2(y)
-        return y
+        return self.bn(1/3 * sum(spatial_selective(self.transplit(x), self.cv1)))
 
 
 class BottleneckAttn(Bottleneck):
@@ -1364,17 +1353,28 @@ class LowFAM(nn.Module):
             raise NotImplementedError
         self.ds = F.adaptive_avg_pool2d
 
-    def forward(self, x:list):
+    def align(self, x:list[torch.Tensor])->list[torch.Tensor]:
         _, _, H, W = x[1].shape
         if self.sample == 'bilinear':
-            y = self.us(x[0], (H, W), mode='bilinear', align_corners=False)
+            x[0] = self.us(x[0], (H, W), mode='bilinear', align_corners=False)
         elif self.sample == 'carafe':
-            y = self.us(x[0])
+            x[0] = self.us(x[0])
         elif self.sample == 'FreqFusion':
-            y, x[1] = self.us(x_l=x[0], x_h=x[1])
+            x[0], x[1] = self.us(x_l=x[0], x_h=x[1])
         else:
             raise NotImplementedError
-        return torch.cat([y, x[1]] + [self.ds(x_, [H, W]) for x_ in x[2:]], dim=1)
+        return x[:2] + [self.ds(t, [H, W]) for t in x[2:]]
+
+    def forward(self, x:list):
+        return torch.cat(self.align(x), dim=1)
+    
+class LowFSAM(LowFAM):
+    def __init__(self, c_u, sample = 'bilinear'):
+        super().__init__(c_u, sample)
+        self.cvsq = Conv(3, 4, 7, p=3, act=nn.Sigmoid())
+
+    def forward(self, x:list[torch.Tensor]):
+        return torch.cat(spatial_selective(self.align(x), self.cvsq), dim=1)
         
 class LowIFM(nn.Module):
     """Low-stage information fusion module."""
@@ -1412,9 +1412,20 @@ class HighFAM(nn.Module):
         super().__init__()
         self.ds = F.adaptive_avg_pool2d
 
-    def forward(self, x:list[torch.Tensor]):
+    def align(self, x:list[torch.Tensor])->list[torch.Tensor]:
         _, _, H, W = x[0].shape
-        return torch.cat([x[0]] + [self.ds(x_, [H, W]) for x_ in x[1:]], dim=1)
+        return x[:1] + [self.ds(x_, [H, W]) for x_ in x[1:]]
+
+    def forward(self, x:list[torch.Tensor]):
+        return torch.cat(self.align(x), dim=1)
+
+class HighFSAM(HighFAM):
+    def __init__(self):
+        super().__init__()
+        self.cv = Conv(3, 3, 7, p=3, act=nn.Sigmoid)
+
+    def forward(self, x:list[torch.Tensor]):
+        return torch.cat(spatial_selective(self.align(x), self.cv), dim=1)
 
 # class MLP(nn.Module):
 #     def __init__(self, c1, c2, h=None, d=0.):
@@ -2064,15 +2075,7 @@ class LSKblock(nn.Module):
         x2 = self.cvsp(x1)
         x1 = self.cv1(x1)
         x2 = self.cv2(x2)
-
-        y = torch.cat([x1, x2], dim=1)
-        y_avg = y.mean(dim=1, keepdim=True)
-        y_max, _ = y.max(dim=1, keepdim=True)
-        y_std = y.std(dim=1, keepdim=True, unbiased=False).nan_to_num(0.0)
-        y = torch.cat([y_avg, y_max, y_std], dim=1)
-        y = self.cvsq(y)
-
-        y = x1 * y[:,0,:,:].unsqueeze(1) + x2 * y[:,1,:,:].unsqueeze(1)
+        y = sum(spatial_selective([x1, x2], self.cvsq))
         y = self.cv3(y)
         return self.bn(x * y)
     
