@@ -67,6 +67,7 @@ from ultralytics.nn.modules import (
     MCA,
     pMCA,
     MSSA,
+    LSKMCA,
     # C2fAttn,
     C2fLSK,
     C3kAttn,
@@ -87,6 +88,7 @@ from ultralytics.nn.modules import (
     FreqFusion,
     C2PSSA,
     C2INXB,
+    LSKblock,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1142,7 +1144,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is Split:
             c2 = [(make_divisible(min(arg, max_channels)*width, 8) if arg != nc else arg) for arg in args]
             args = [c2]
-        elif m in {CBAM}:
+        elif m in {CBAM, LSKblock}:
             c2 = ch[f]
             args = [c2, *args]
         elif m is CARAFE:

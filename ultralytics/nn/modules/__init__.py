@@ -59,6 +59,7 @@ from .block import (
     SEAttention,
     MCA,
     pMCA,
+    LSKMCA,
     MSSA,
     # C2fMCA,
     C3kAttn,
@@ -79,6 +80,7 @@ from .block import (
     FreqFusion,
     C2INXB,
     C2PSSA,
+    LSKblock,
     C2fLSK,
 )
 from .conv import (
@@ -184,6 +186,7 @@ __all__ = (
     "SEAttention",
     "MCA",
     "pMCA",
+    "LSKMCA",
     "MSSA",
     # "C2fAttn",
     "C3kAttn",
@@ -204,5 +207,6 @@ __all__ = (
     "FreqFusion",
     "C2INXB",
     "C2PSSA",
+    "LSKblock",
     "C2fLSK",
 )

@@ -55,6 +55,9 @@ __all__ = (
     "SCDown",
     "SEAttention",
     "MCA",
+    "pMCA",
+    "MSSA",
+    "LSKMCA",
     "C2fMCA",
     "C3kMCA",
     "C3k2MCA",
@@ -74,8 +77,8 @@ __all__ = (
     "C2INXB",
     "C2PSSA",
     "ConvHighIFM",
+    "LSKblock",
     "C2fLSK",
-    "MSSA",
 )
 
 
@@ -1205,6 +1208,33 @@ class MCAGate(nn.Module):
 
         return x*out
 
+class LSKMCAGate(MCAGate):
+    def __init__(self, k1=3, k2=5, pool_types=['avg', 'std']):
+        super().__init__(k1, pool_types)
+        self.conv2 = DWConv(1, 1, (1, k2), 1, d=k2//2)
+        self.cvsq = Conv(3, 2, (1, 7), act=nn.Sigmoid())
+
+    def forward(self, x):
+        f = [pool(x) for pool in self.pools]
+        if len(f) == 1:
+            out = f[0]
+        elif len(f) == 2:
+            weight = torch.sigmoid(self.weight)
+            out = 1/2*(f[0]+f[1]) + weight[0]*f[0]+weight[1]*f[1]
+        else:
+            assert False, "Feature Extraction Exception!"
+
+        out = out.permute(0, 3, 2, 1).contiguous()
+        x1 = self.conv(out)
+        x2 = self.conv2(x1)
+        out = 1/2 * sum(spatial_selective([x1, x2], self.cvsq))
+        out = out.permute(0, 3, 2, 1).contiguous()
+        out = self.sigmoid(out)
+        out = out.expand_as(x)
+
+        return x*out
+        
+
 class MCA(nn.Module):
     def __init__(self, c1, no_spatial=False):
         """Constructs a MCA module.
@@ -1261,7 +1291,9 @@ class pMCA(MCA):
             return 1/2*(x_h*self.weights[0]+x_w*self.weights[1])
 
 class MSSA(MCA):
-    '''Multidimensional Spatial Selective Attention Module'''
+    '''Multidimensional Spatial Selective Attention Module
+       Useless 
+    '''
     def __init__(self, c1, no_spatial=False):
         assert no_spatial == False
         super().__init__(c1, no_spatial)
@@ -1271,6 +1303,18 @@ class MSSA(MCA):
     def forward(self, x):
         return self.bn(1/3 * sum(spatial_selective(self.transplit(x), self.cv1)))
 
+class LSKMCA(MCA):
+    def __init__(self, c1, no_spatial=False):
+        super().__init__(c1, no_spatial)
+        self.h_cw = LSKMCAGate()
+        self.w_hc = LSKMCAGate()
+        if not no_spatial:
+            l = 1.5
+            g = 1
+            temp = round(abs((log2(c1) - g) / l))
+            k = temp if temp % 2 else temp - 1
+
+            self.c_hw = LSKMCAGate(k1=k, k2=k+2)
 
 class BottleneckAttn(Bottleneck):
     """Bottleneck with Attention."""
