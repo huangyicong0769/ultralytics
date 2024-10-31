@@ -65,10 +65,13 @@ __all__ = (
     "LowFAM",
     "LowFSAM",
     "LowIFM",
+    "LowLKSIFM",
     "Split",
     "HighFAM",
     "HighFSAM",
     "HighIFM",
+    "ConvHighIFM",
+    "ConvHighLSKIFM",
     "LowLAF",
     "HiLAF",
     "Inject",
@@ -76,7 +79,6 @@ __all__ = (
     "FreqFusion",
     "C2INXB",
     "C2PSSA",
-    "ConvHighIFM",
     "LSKblock",
     "C2fLSK",
 )
@@ -1423,7 +1425,7 @@ class LowFSAM(LowFAM):
 class LowIFM(nn.Module):
     """Low-stage information fusion module."""
 
-    def __init__(self, c1, c2, n=1, e=0.5, k=(1, 3)):
+    def __init__(self, c1, c2, n=1, e=0.5):
         super().__init__()
         c_ = int(c2 * e)
         self.conv1 = Conv(c1, c_, k=1)
@@ -1441,6 +1443,16 @@ class LowIFM(nn.Module):
         y = self.conv2(self.m(self.conv1(x)))
         return y
     
+class LowLKSIFM(LowIFM):
+    '''Large kernel selective LIFM'''
+    def __init__(self, c1, c2, n=1, e=0.5):
+        super().__init__(c1, c2, n, e)
+        c_ = int(c2 * e)
+        self.attn = LSKblock(c_)
+    
+    def forward(self, x):
+        return self.conv2(self.m(self.attn(self.conv1(x))))
+
 class Split(nn.Module):
     def __init__(self, c):
         super().__init__()
@@ -1515,7 +1527,17 @@ class ConvHighIFM(nn.Module):
         y = self.conv2(self.m(self.conv1(x)))
         return y
 
+class ConvHighLKSIFM(ConvHighIFM):
+    def __init__(self, c1, c2, n=1, e=0.5):
+        super().__init__(c1, c2, n, e)
+        c_ = int(c2 * e)
+        self.attn = LSKblock(c_)
+
+    def forward(self, x):
+        return self.conv2(self.m(self.attn(self.conv1(x))))
+
 class HighIFM(ConvHighIFM):
+    '''Replace Transformer to Super Token Attention'''
     def __init__(self, c1, c2, n=1, e=0.5, num_head=4):
         super().__init__(c1, c2, n, e)
         c_ = int(c2*e)
@@ -2104,14 +2126,15 @@ class C2PSSA(C2PSA):
 class LSKblock(nn.Module):
     ''''http://arxiv.org/abs/2303.09030'''
 
-    def __init__(self, c):
+    def __init__(self, c, e=0.5):
         super().__init__()
+        c_ = int(c * e)
         self.cv0 = Conv(c, c, 5, p=2, g=c)
         self.cvsp = Conv(c, c, 7, s=1, p=9, g=c, d=3)
-        self.cv1 = Conv(c, c//2, 1)
-        self.cv2 = Conv(c, c//2, 1)
+        self.cv1 = Conv(c, c_, 1)
+        self.cv2 = Conv(c, c_, 1)
         self.cvsq = Conv(3, 2, 7, p=3, act=nn.Sigmoid())
-        self.cv3 = Conv(c//2, c, 1)
+        self.cv3 = Conv(c_, c, 1)
         self.bn = nn.BatchNorm2d(c)
 
     def forward(self, x):

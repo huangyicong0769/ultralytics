@@ -76,11 +76,13 @@ from ultralytics.nn.modules import (
     LowFAM,
     LowFSAM,
     LowIFM,
+    LowLKSIFM,
     Split,
     HighFAM,
     HighFSAM,
     HighIFM,
     ConvHighIFM,
+    ConvHighLKSIFM,
     LowLAF,
     HiLAF,
     Inject,
@@ -1105,7 +1107,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 args = args[:1]
             else:
                 c2 = sum(ch[x] for x in f)
-        elif m in {LowIFM, HighIFM, ConvHighIFM}:
+        elif m in {LowIFM, LowLKSIFM, HighIFM, ConvHighIFM, ConvHighLKSIFM}:
             c1, c2 = ch[f], args[0]
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
