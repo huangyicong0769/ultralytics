@@ -66,12 +66,14 @@ __all__ = (
     "LowFSAM",
     "LowIFM",
     "LowLKSIFM",
+    "StarLowIFM",
     "Split",
     "HighFAM",
     "HighFSAM",
     "HighIFM",
     "ConvHighIFM",
     "ConvHighLSKIFM",
+    "StarHighIFM",
     "LowLAF",
     "HiLAF",
     "Inject",
@@ -81,6 +83,7 @@ __all__ = (
     "C2PSSA",
     "LSKblock",
     "C2fLSK",
+    "Star",
 )
 
 
@@ -1321,7 +1324,7 @@ class LSKMCA(MCA):
 class BottleneckAttn(Bottleneck):
     """Bottleneck with Attention."""
 
-    def __init__(self, c1, c2, attn=nn.Identity, shortcut=True, g=1, k=(3, 3), e=0.5):
+    def __init__(self, c1, c2, attn=nn.Identity(), shortcut=True, g=1, k=(3, 3), e=0.5):
         """Initializes a MCA bottleneck module with optional shortcut connection and configurable parameters."""
         super().__init__(c1, c2, shortcut, g, k, e)
         self.attn = attn(c2)
@@ -1335,7 +1338,7 @@ class BottleneckAttn(Bottleneck):
 class C2fAttn(C2f):
     """C2f with Attention modified Bottlesneck."""
 
-    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, g=1, e=0.5):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity(), shortcut=False, g=1, e=0.5):
         """Initializes a CSP bottleneck with 2 convolutions and n Bottleneck blocks for faster processing."""
         super().__init__(c1, c2, n, shortcut, g, e)
         self.m = nn.ModuleList(BottleneckAttn(self.c, self.c, attn, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
@@ -1343,7 +1346,7 @@ class C2fAttn(C2f):
 class C3kAttn(C3k):
     """C2f with Attention modified Bottlesneck."""
 
-    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, g=1, e=0.5, k=3):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity(), shortcut=False, g=1, e=0.5, k=3):
         """Initializes a CSP bottleneck with 2 convolutions and n Bottleneck blocks for faster processing."""
         super().__init__(c1, c2, n, shortcut, g, e, k)
         c_ = int(c2 * e)
@@ -1352,7 +1355,7 @@ class C3kAttn(C3k):
 class C3k2Attn(C3k2):
     """C2f with Attention modified Bottlesneck."""
 
-    def __init__(self, c1, c2, n=1, attn=nn.Identity, c3k=False, e=0.5, g=1, shortcut=True):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity(), c3k=False, e=0.5, g=1, shortcut=True):
         """Initializes a CSP bottleneck with 2 convolutions and n Bottleneck blocks for faster processing."""
         super().__init__(c1, c2, n, c3k, e, g, shortcut)
         self.m = nn.ModuleList(
@@ -1427,16 +1430,16 @@ class LowIFM(nn.Module):
 
     def __init__(self, c1, c2, n=1, e=0.5):
         super().__init__()
-        c_ = int(c2 * e)
-        self.conv1 = Conv(c1, c_, k=1)
+        self.c_ = int(c2 * e)
+        self.conv1 = Conv(c1, self.c_, k=1)
         # self.m = nn.Sequential(*(RepVGGDW(c_) for _ in range(n)))
         # self.m = nn.Sequential(*(mBottleneck(c2, c2, e=e) for _ in range(n)))
-        self.conv2 = Conv(c_, c2, k=1)
+        self.conv2 = Conv(self.c_, c2, k=1)
         # self.attn = MCA(c_)
         self.m = nn.Sequential()
         for _ in range(n):
-            self.m.add_module('RepVGGDW', RepVGGDW(c_))
-            self.m.add_module('MCA', MCA(c_))
+            self.m.add_module('RepVGGDW', RepVGGDW(self.c_))
+            self.m.add_module('MCA', MCA(self.c_))
 
     def forward(self, x):
         # y = self.m(self.conv1(x))
@@ -1447,11 +1450,18 @@ class LowLKSIFM(LowIFM):
     '''Large kernel selective LIFM'''
     def __init__(self, c1, c2, n=1, e=0.5):
         super().__init__(c1, c2, n, e)
-        c_ = int(c2 * e)
-        self.attn = LSKblock(c_)
-    
-    def forward(self, x):
-        return self.conv2(self.m(self.attn(self.conv1(x))))
+        self.m = nn.Sequential()
+        for _ in range(n):
+            self.m.add_module('LSKblock', LSKblock(self.c_))
+            self.m.add_module('MCA', MCA(self.c_))
+
+class StarLowIFM(LowIFM):
+    def __init__(self, c1, c2, n=1, e=0.25, mlp_r=4):
+        super().__init__(c1, c2, n, e)
+        self.m = nn.Sequential()
+        for _ in range(n):
+            self.m.add_module('Star', Star(self.c_, mlp_r))
+            self.m.add_module('MCA', MCA(self.c_))
 
 class Split(nn.Module):
     def __init__(self, c):
@@ -1514,13 +1524,13 @@ class ConvHighIFM(nn.Module):
 
     def __init__(self, c1, c2, n=1, e=0.5):
         super().__init__()
-        c_ = int(c2 * e)
-        self.conv1 = Conv(c1, c_)
-        self.conv2 = Conv(c_, c2)
+        self.c_ = int(c2 * e)
+        self.conv1 = Conv(c1, self.c_)
+        self.conv2 = Conv(self.c_, c2)
         self.m = nn.Sequential()
         for _ in range(n):
-            self.m.add_module('RepVGGDW', RepVGGDW(c_))
-            self.m.add_module('MCA', MCA(c_))
+            self.m.add_module('RepVGGDW', RepVGGDW(self.c_))
+            self.m.add_module('MCA', MCA(self.c_))
 
     def forward(self, x):
         # y = self.m(self.conv1(x)) + self.conv3(x)
@@ -1530,18 +1540,24 @@ class ConvHighIFM(nn.Module):
 class ConvHighLKSIFM(ConvHighIFM):
     def __init__(self, c1, c2, n=1, e=0.5):
         super().__init__(c1, c2, n, e)
-        c_ = int(c2 * e)
-        self.attn = LSKblock(c_)
-
-    def forward(self, x):
-        return self.conv2(self.m(self.attn(self.conv1(x))))
+        self.m = nn.Sequential()
+        for _ in range(n):
+            self.m.add_module('LSKblock', LSKblock(self.c_))
+            self.m.add_module('MCA', MCA(self.c_))
+    
+class StarHighIFM(ConvHighIFM):
+    def __init__(self, c1, c2, n=1, e=0.25, mlp_r=4):
+        super().__init__(c1, c2, n, e)
+        self.m = nn.Sequential()
+        for _ in range(n):
+            self.m.add_module('Star', Star(self.c_, mlp_r))
+            self.m.add_module('MCA', MCA(self.c_))
 
 class HighIFM(ConvHighIFM):
     '''Replace Transformer to Super Token Attention'''
     def __init__(self, c1, c2, n=1, e=0.5, num_head=4):
         super().__init__(c1, c2, n, e)
-        c_ = int(c2*e)
-        self.m = nn.Sequential(*(StokenAttentionLayer(c_, 1, (1, 1), num_head, drop=0.1, layerscale=True) for _ in range(n)))
+        self.m = nn.Sequential(*(StokenAttentionLayer(self.c_, 1, (1, 1), num_head, drop=0.1, layerscale=True) for _ in range(n)))
 
 class LowLAF(nn.Module):
     """Low-stage lightweight adjacent layer fusion module"""
@@ -1960,7 +1976,7 @@ class InceptionNeXtBlock(nn.Module):
             y = y.mul(self.gamma.reshape(1, -1, 1, 1))
         return y + x if self.shortcut else y
 
-class C2INXB(C2fPSA):
+class C2INXB(C2PSA):
     def __init__(self, c1, c2, n=1, e=0.5):
         super().__init__(c1, c2, n, e)
         self.m = nn.Sequential(*(InceptionNeXtBlock(self.c) for _ in range(n)))
@@ -2150,3 +2166,42 @@ class C2fLSK(C2f):
     def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
         super().__init__(c1, c2, n, shortcut, g, e)
         self.m = nn.ModuleList(LSKblock(self.c) for _ in range(n))
+        
+class Star(nn.Module):
+    """https://github.com/ma-xu/Rewrite-the-Stars/
+    """
+    def __init__(self, c, mlp_r=4):
+        super().__init__()
+        self.cv1 = DWConv(c, c, k=7, act=False)
+        self.fc1 = nn.Conv2d(c, c*mlp_r, kernel_size=1)
+        self.act = nn.ReLU6()
+        self.fc2 = nn.Conv2d(c, c*mlp_r, kernel_size=1)
+        self.fc3 = Conv(c* mlp_r, c, k=1, act=False)
+        self.cv2 = DWConv(c, c, k=7, act=False)
+    
+    def forward(self, x):
+        res = x
+        x = self.cv1(x)
+        x1, x2 = self.fc1(x), self.fc2(x)
+        x = self.act(x1) * x2
+        x = self.fc3(x)
+        return res + self.cv2(x)
+    
+class C2fS(C2f):
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
+        super().__init__(c1, c2, n, shortcut, g, e)
+        self.cv2 = DWConv(self.c, c2, 1)
+        self.norm = nn.BatchNorm2d(self.c)
+    
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        rsl = y[0]
+        for t in y[1:]:
+            rsl = self.norm(rsl * t)
+        return self.cv2(y[0] + rsl)
+
+class C2fSAttn(C2fS):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity(), shortcut=False, g=1, e=0.5):
+        super().__init__(c1, c2, n, shortcut, g, e)
+        self.m = nn.ModuleList(BottleneckAttn(self.c, self.c, attn, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))

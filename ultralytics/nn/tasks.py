@@ -77,12 +77,14 @@ from ultralytics.nn.modules import (
     LowFSAM,
     LowIFM,
     LowLKSIFM,
+    StarLowIFM,
     Split,
     HighFAM,
     HighFSAM,
     HighIFM,
     ConvHighIFM,
     ConvHighLKSIFM,
+    StarHighIFM,
     LowLAF,
     HiLAF,
     Inject,
@@ -91,6 +93,9 @@ from ultralytics.nn.modules import (
     C2PSSA,
     C2INXB,
     LSKblock,
+    Star,
+    C2fS,
+    C2fSAttn,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1031,6 +1036,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             SPPELAN,
             C2fAttn,
             C2fLSK,
+            C2fS,
+            C2fSAttn,
             C3,
             C3TR,
             C3Ghost,
@@ -1054,7 +1061,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             #         max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2]
             #     )  # num heads
 
-            if m in {C2fAttn, C2fAttnELAN4, C3kAttn, C3k2Attn}:
+            if m in {C2fAttn, C2fAttnELAN4, C2fSAttn, C3kAttn, C3k2Attn}:
                 args[1] = getattr(torch.nn, args[1][1:]) if "nn." in args[1] else globals()[args[1]]
             args = [c1, c2, *args[1:]]
 
@@ -1063,12 +1070,14 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 C1,
                 C2,
                 C2f,
+                C2fS,
                 # C2fMCA,
                 C3kAttn,
                 C3k2,
                 C3k2Attn,
                 C2fAttn,
                 C2fLSK,
+                C2fSAttn,
                 C3,
                 C3TR,
                 C3Ghost,
@@ -1107,7 +1116,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 args = args[:1]
             else:
                 c2 = sum(ch[x] for x in f)
-        elif m in {LowIFM, LowLKSIFM, HighIFM, ConvHighIFM, ConvHighLKSIFM}:
+        elif m in {LowIFM, LowLKSIFM, HighIFM, ConvHighIFM, ConvHighLKSIFM, StarLowIFM, StarHighIFM}:
             c1, c2 = ch[f], args[0]
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
@@ -1146,7 +1155,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is Split:
             c2 = [(make_divisible(min(arg, max_channels)*width, 8) if arg != nc else arg) for arg in args]
             args = [c2]
-        elif m in {CBAM, LSKblock}:
+        elif m in {CBAM, LSKblock, Star}:
             c2 = ch[f]
             args = [c2, *args]
         elif m is CARAFE:
