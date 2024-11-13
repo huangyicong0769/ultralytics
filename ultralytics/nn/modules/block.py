@@ -2190,17 +2190,18 @@ class Star(nn.Module):
 class C2fS(C2f):
     def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
         super().__init__(c1, c2, n, shortcut, g, e)
-        self.cv2 = DWConv(self.c, c2, 1)
+        self.cv2 = DWConv(self.c, c2, 1, act=False)
         self.norm = nn.BatchNorm2d(self.c)
+        self.act = nn.ReLU6()
     
-    def forward(self, x):
-        y = list(self.cv1(x).chunk(2, 1))
+    def forward(self, x:torch.Tensor):
+        y = [chunk.contiguous() for chunk in self.cv1(x).chunk(2, 1)]
         y.extend(m(y[-1]) for m in self.m)
         rsl = y[0]
         for t in y[1:]:
-            rsl = self.norm(rsl * t)
+            rsl = self.norm(rsl * self.act(t.clone()))
         return self.cv2(y[0] + rsl)
-
+    
 class C2fSAttn(C2fS):
     def __init__(self, c1, c2, n=1, attn=nn.Identity(), shortcut=False, g=1, e=0.5):
         super().__init__(c1, c2, n, shortcut, g, e)
