@@ -91,6 +91,7 @@ from .block import (
     C2fSAttn,
     S2f,
     S2fMCA,
+    FMF,
 )
 from .conv import (
     CBAM,
@@ -226,5 +227,6 @@ __all__ = (
     "C2fS",
     "C2fSAttn",
     "S2f",
-    "S2fMCA"
+    "S2fMCA",
+    "FMF",
 )

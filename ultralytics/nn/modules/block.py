@@ -86,6 +86,7 @@ __all__ = (
     "Star",
     "S2f",
     "S2fMCA",
+    "FMF",
 )
 
 
@@ -2242,4 +2243,18 @@ class S2fMCA(S2f):
         super().__init__(c1, c2, n, g, e)
         self.m = nn.ModuleList(StarMCA(self.c) for _ in range(n))
         
-        
+class FMF(nn.Module):
+    """Feature Focusing Diffusion Model
+    http://arxiv.org/abs/2408.00438
+    """
+
+    def __init__(self, c1, c2, k=[3, 5, 7], e=0.5):
+        super().__init__()
+        self.c = int(c2 * e)
+        self.m = nn.ModuleList(DWConv(c1, self.c, kl) for kl in k)
+        self.cv1 = Conv(c1, self.c)
+        self.cv2 = Conv(self.c, c2)
+
+    def forward(self, x):
+        t = self.cv1(x)
+        return self.cv2(t + torch.stack([t]+[cv(x) for cv in self.m], dim=0).mean(dim=0))

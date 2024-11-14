@@ -98,6 +98,7 @@ from ultralytics.nn.modules import (
     C2fSAttn,
     S2f,
     S2fMCA,
+    FMF,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1123,6 +1124,12 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             else:
                 c2 = sum(ch[x] for x in f)
         elif m in {LowIFM, LowLKSIFM, HighIFM, ConvHighIFM, ConvHighLKSIFM, StarLowIFM, StarHighIFM}:
+            c1, c2 = ch[f], args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels)*width, 8)
+            args = [c1, c2, n, *args[1:]]
+            n = 1
+        elif m is FMF:
             c1, c2 = ch[f], args[0]
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
