@@ -92,6 +92,8 @@ from .block import (
     S2f,
     S2fMCA,
     FMF,
+    WTBottleneck,
+    WTC2f,
 )
 from .conv import (
     CBAM,
@@ -107,6 +109,7 @@ from .conv import (
     LightConv,
     RepConv,
     SpatialAttention,
+    WTConv,
 )
 from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, ARBDetect
 from .transformer import (
@@ -229,4 +232,7 @@ __all__ = (
     "S2f",
     "S2fMCA",
     "FMF",
+    "WTConv",
+    "WTBottleneck",
+    "WTC2f"
 )

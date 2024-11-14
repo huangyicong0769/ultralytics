@@ -99,6 +99,7 @@ from ultralytics.nn.modules import (
     S2f,
     S2fMCA,
     FMF,
+    WTC2f,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1056,6 +1057,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             SEAttention,
             C2PSSA,
             C2INXB,
+            WTC2f,
         }:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
@@ -1066,7 +1068,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             #         max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2]
             #     )  # num heads
 
-            if m in {C2fAttn, C2fAttnELAN4, C2fSAttn, C3kAttn, C3k2Attn}:
+            if m in {C2fAttn, C2fAttnELAN4, C2fSAttn, C3kAttn, C3k2Attn, WTC2f}:
                 args[1] = getattr(torch.nn, args[1][1:]) if "nn." in args[1] else globals()[args[1]]
             args = [c1, c2, *args[1:]]
 
@@ -1095,6 +1097,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 C2PSA,
                 C2PSSA,
                 C2INXB,
+                WTC2f,
             }:
                 args.insert(2, n)  # number of repeats
                 n = 1

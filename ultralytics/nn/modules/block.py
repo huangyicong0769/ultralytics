@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv
 from .transformer import TransformerBlock, MLPBlock, LayerNorm2d, MLP, DropPath
 from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe, spatial_selective
 
@@ -87,6 +87,7 @@ __all__ = (
     "S2f",
     "S2fMCA",
     "FMF",
+    "WTC2f",
 )
 
 
@@ -1327,7 +1328,7 @@ class LSKMCA(MCA):
 class BottleneckAttn(Bottleneck):
     """Bottleneck with Attention."""
 
-    def __init__(self, c1, c2, attn=nn.Identity(), shortcut=True, g=1, k=(3, 3), e=0.5):
+    def __init__(self, c1, c2, attn=nn.Identity, shortcut=True, g=1, k=(3, 3), e=0.5):
         """Initializes a MCA bottleneck module with optional shortcut connection and configurable parameters."""
         super().__init__(c1, c2, shortcut, g, k, e)
         self.attn = attn(c2)
@@ -1341,7 +1342,7 @@ class BottleneckAttn(Bottleneck):
 class C2fAttn(C2f):
     """C2f with Attention modified Bottlesneck."""
 
-    def __init__(self, c1, c2, n=1, attn=nn.Identity(), shortcut=False, g=1, e=0.5):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, g=1, e=0.5):
         """Initializes a CSP bottleneck with 2 convolutions and n Bottleneck blocks for faster processing."""
         super().__init__(c1, c2, n, shortcut, g, e)
         self.m = nn.ModuleList(BottleneckAttn(self.c, self.c, attn, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
@@ -1349,7 +1350,7 @@ class C2fAttn(C2f):
 class C3kAttn(C3k):
     """C2f with Attention modified Bottlesneck."""
 
-    def __init__(self, c1, c2, n=1, attn=nn.Identity(), shortcut=False, g=1, e=0.5, k=3):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, g=1, e=0.5, k=3):
         """Initializes a CSP bottleneck with 2 convolutions and n Bottleneck blocks for faster processing."""
         super().__init__(c1, c2, n, shortcut, g, e, k)
         c_ = int(c2 * e)
@@ -1358,7 +1359,7 @@ class C3kAttn(C3k):
 class C3k2Attn(C3k2):
     """C2f with Attention modified Bottlesneck."""
 
-    def __init__(self, c1, c2, n=1, attn=nn.Identity(), c3k=False, e=0.5, g=1, shortcut=True):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, c3k=False, e=0.5, g=1, shortcut=True):
         """Initializes a CSP bottleneck with 2 convolutions and n Bottleneck blocks for faster processing."""
         super().__init__(c1, c2, n, c3k, e, g, shortcut)
         self.m = nn.ModuleList(
@@ -2229,7 +2230,7 @@ class C2fS(C2f):
         return self.cv2(y[0] + rsl)
     
 class C2fSAttn(C2fS):
-    def __init__(self, c1, c2, n=1, attn=nn.Identity(), shortcut=False, g=1, e=0.5):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, g=1, e=0.5):
         super().__init__(c1, c2, n, shortcut, g, e)
         self.m = nn.ModuleList(BottleneckAttn(self.c, self.c, attn, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
         
@@ -2248,7 +2249,7 @@ class FMF(nn.Module):
     http://arxiv.org/abs/2408.00438
     """
 
-    def __init__(self, c1, c2, k=[3, 5, 7], e=0.5):
+    def __init__(self, c1, c2, k=[1, 3, 5, 7], e=0.5):
         super().__init__()
         self.c = int(c2 * e)
         self.m = nn.ModuleList(DWConv(c1, self.c, kl) for kl in k)
@@ -2256,5 +2257,25 @@ class FMF(nn.Module):
         self.cv2 = Conv(self.c, c2)
 
     def forward(self, x):
-        t = self.cv1(x)
-        return self.cv2(t + torch.stack([t]+[cv(x) for cv in self.m], dim=0).mean(dim=0))
+        return self.cv2(self.cv1(x) + torch.stack([cv(x) for cv in self.m], dim=0).mean(dim=0))
+    
+class WTBottleneck(nn.Module):
+    def __init__(self, c1, c2, attn=nn.Identity, shortcut=True, wt_levels=1, k=3, e=0.5):
+        super().__init__()
+        self.shortcut = shortcut and c1==c2
+        self.c = int(c2 * e)
+        self.cv1 = Conv(c1, self.c)
+        self.cv2 = WTConv(self.c, self.c, k, wt_levels)
+        self.us = F.interpolate
+        self.cv3 = Conv(self.c, c2)
+        self.attn = attn(c2)
+        
+    def forward(self, x):
+        H, W = x.shape[2:]
+        y = self.attn(self.cv3(self.us(self.cv2(self.cv1(x)), (H, W), mode='bilinear', align_corners=True)))
+        return x +  y if self.shortcut else y
+    
+class WTC2f(C2fAttn):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, wt_levels=1, k=3, e=0.5):
+        super().__init__(c1, c2, n, attn, shortcut, 1, e)
+        self.m = nn.ModuleList(WTBottleneck(self.c, self.c, attn, shortcut, wt_levels, k, e) for _ in range(n))

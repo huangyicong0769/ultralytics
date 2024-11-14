@@ -6,6 +6,9 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+from .utils import create_wavelet_filter, wavelet_transform, inverse_wavelet_transform
 
 __all__ = (
     "Conv",
@@ -21,6 +24,7 @@ __all__ = (
     "CBAM",
     "Concat",
     "RepConv",
+    "WTConv",
 )
 
 
@@ -330,3 +334,102 @@ class Concat(nn.Module):
     def forward(self, x):
         """Forward pass for the YOLOv8 mask Proto module."""
         return torch.cat(x, self.d)
+
+class WTConv2d(nn.Module):
+    """Wavelet Convolutions for Large Receptive Fields
+    https://github.com/BGU-CS-VIL/WTConv
+    """
+    def __init__(self, c1, c2, k=5, s=1, bias=True, wt_levels=1, wt_type='db1'):
+        super(WTConv2d, self).__init__()
+
+        assert c1 == c2
+
+        self.c1 = c1
+        self.wt_levels = wt_levels
+        self.s = s
+        self.d = 1
+
+        self.wt_filter, self.iwt_filter = create_wavelet_filter(wt_type, c1, c1, torch.float)
+        self.wt_filter = nn.Parameter(self.wt_filter, requires_grad=False)
+        self.iwt_filter = nn.Parameter(self.iwt_filter, requires_grad=False)
+
+        self.base_conv = nn.Conv2d(c1, c1, k, padding='same', stride=1, dilation=1, groups=c1, bias=bias)
+        self.base_scale = _ScaleModule([1,c1,1,1])
+
+        self.wavelet_convs = nn.ModuleList(
+            [nn.Conv2d(c1*4, c1*4, k, padding='same', stride=1, dilation=1, groups=c1*4, bias=False) for _ in range(self.wt_levels)]
+        )
+        self.wavelet_scale = nn.ModuleList(
+            [_ScaleModule([1,c1*4,1,1], s=0.1) for _ in range(self.wt_levels)]
+        )
+
+        if self.s > 1:
+            self.do_stride = nn.AvgPool2d(kernel_size=1, stride=s)
+        else:
+            self.do_stride = None
+
+    def forward(self, x):
+
+        x_ll_in_levels = []
+        x_h_in_levels = []
+        shapes_in_levels = []
+
+        curr_x_ll = x
+
+        for i in range(self.wt_levels):
+            curr_shape = curr_x_ll.shape
+            shapes_in_levels.append(curr_shape)
+            if (curr_shape[2] % 2 > 0) or (curr_shape[3] % 2 > 0):
+                curr_pads = (0, curr_shape[3] % 2, 0, curr_shape[2] % 2)
+                curr_x_ll = F.pad(curr_x_ll, curr_pads)
+
+            curr_x = wavelet_transform(curr_x_ll, self.wt_filter)
+            curr_x_ll = curr_x[:,:,0,:,:]
+            
+            shape_x = curr_x.shape
+            curr_x_tag = curr_x.reshape(shape_x[0], shape_x[1] * 4, shape_x[3], shape_x[4])
+            curr_x_tag = self.wavelet_scale[i](self.wavelet_convs[i](curr_x_tag))
+            curr_x_tag = curr_x_tag.reshape(shape_x)
+
+            x_ll_in_levels.append(curr_x_tag[:,:,0,:,:])
+            x_h_in_levels.append(curr_x_tag[:,:,1:4,:,:])
+
+        next_x_ll = 0
+
+        for i in range(self.wt_levels-1, -1, -1):
+            curr_x_ll = x_ll_in_levels.pop()
+            curr_x_h = x_h_in_levels.pop()
+            curr_shape = shapes_in_levels.pop()
+
+            curr_x_ll = curr_x_ll + next_x_ll
+
+            curr_x = torch.cat([curr_x_ll.unsqueeze(2), curr_x_h], dim=2)
+            next_x_ll = inverse_wavelet_transform(curr_x, self.iwt_filter)
+
+            next_x_ll = next_x_ll[:, :, :curr_shape[2], :curr_shape[3]]
+
+        x_tag = next_x_ll
+        assert len(x_ll_in_levels) == 0
+        
+        x = self.base_scale(self.base_conv(x))
+        x = x + x_tag
+        
+        if self.do_stride is not None:
+            x = self.do_stride(x)
+
+        return x
+    
+class _ScaleModule(nn.Module):
+    def __init__(self, c, s=1.0, init_bias=0):
+        super(_ScaleModule, self).__init__()
+        self.dims = c
+        self.weight = nn.Parameter(torch.ones(*c) * s)
+        self.bias = None
+    
+    def forward(self, x):
+        return torch.mul(self.weight, x)
+    
+class WTConv(Conv):
+    def __init__(self, c1, c2, k=1, s=1, bias=True, wt_levels=1, wt_type='db1', act=True):
+        super().__init__(c1, c2, k, s, None, 1, 1, act)
+        self.conv = WTConv2d(c1, c2, k, s, bias, wt_levels, wt_type)
