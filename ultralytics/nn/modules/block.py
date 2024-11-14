@@ -84,6 +84,8 @@ __all__ = (
     "LSKblock",
     "C2fLSK",
     "Star",
+    "S2f",
+    "S2fMCA",
 )
 
 
@@ -1402,7 +1404,7 @@ class LowFAM(nn.Module):
             raise NotImplementedError
         self.ds = F.adaptive_avg_pool2d
 
-    def align(self, x:list[torch.Tensor])->list[torch.Tensor]:
+    def upsample(self, x:list[torch.Tensor]):
         _, _, H, W = x[1].shape
         if self.sample == 'bilinear':
             x[0] = self.us(x[0], (H, W), mode='bilinear', align_corners=False)
@@ -1412,10 +1414,24 @@ class LowFAM(nn.Module):
             x[0], x[1] = self.us(x_l=x[0], x_h=x[1])
         else:
             raise NotImplementedError
+        return x[0], x[1]
+
+    def align(self, x:list[torch.Tensor])->list[torch.Tensor]:
+        _, _, H, W = x[1].shape
+        x[0], x[1] = self.upsample(x[:2])
         return x[:2] + [self.ds(t, [H, W]) for t in x[2:]]
 
     def forward(self, x:list):
         return torch.cat(self.align(x), dim=1)
+    
+# class LowDFAM(LowFAM):
+#     def __init__(self, c, sample = 'bilinear'):
+#         super().__init__(c, sample)
+#         self.ds = AConv(c//2, c)
+        
+#     def align(self, x):
+#         x[0], x[1] = self.upsample(x[:2])
+#         return x[:2] + [self.ds(x[2]), self.ds(self.ds[x[3]])]
     
 class LowFSAM(LowFAM):
     def __init__(self, c_u, sample = 'bilinear'):
@@ -1445,6 +1461,7 @@ class LowIFM(nn.Module):
         # y = self.m(self.conv1(x))
         y = self.conv2(self.m(self.conv1(x)))
         return y
+    
     
 class LowLKSIFM(LowIFM):
     '''Large kernel selective LIFM'''
@@ -2187,6 +2204,14 @@ class Star(nn.Module):
         x = self.fc3(x)
         return res + self.cv2(x)
     
+class StarMCA(Star):
+    def __init__(self, c, mlp_r=4):
+        super().__init__(c, mlp_r)
+        self.attn = MCA(c)
+        
+    def forward(self, x):
+        return self.attn(super().forward(x))
+    
 class C2fS(C2f):
     def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
         super().__init__(c1, c2, n, shortcut, g, e)
@@ -2206,3 +2231,15 @@ class C2fSAttn(C2fS):
     def __init__(self, c1, c2, n=1, attn=nn.Identity(), shortcut=False, g=1, e=0.5):
         super().__init__(c1, c2, n, shortcut, g, e)
         self.m = nn.ModuleList(BottleneckAttn(self.c, self.c, attn, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
+        
+class S2f(C2f):
+    def __init__(self, c1, c2, n=1, g=1, e=0.5):
+        super().__init__(c1, c2, n, True, g, e)
+        self.m = nn.ModuleList(Star(self.c) for _ in range(n))
+        
+class S2fMCA(S2f):
+    def __init__(self, c1, c2, n=1, g=1, e=0.5):
+        super().__init__(c1, c2, n, g, e)
+        self.m = nn.ModuleList(StarMCA(self.c) for _ in range(n))
+        
+        

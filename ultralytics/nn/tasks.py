@@ -96,6 +96,8 @@ from ultralytics.nn.modules import (
     Star,
     C2fS,
     C2fSAttn,
+    S2f,
+    S2fMCA,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1025,6 +1027,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C2,
             C2f,
             # C2fMCA,
+            S2f,
+            S2fMCA,
             C3kAttn,
             C3k2,
             C3k2Attn,
@@ -1071,6 +1075,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 C2,
                 C2f,
                 C2fS,
+                S2f,
+                S2fMCA,
                 # C2fMCA,
                 C3kAttn,
                 C3k2,
