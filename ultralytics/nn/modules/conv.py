@@ -344,10 +344,11 @@ class WTConv2d(nn.Module):
 
         assert c1 == c2
 
-        self.c1 = c1
+        self.in_channels = c1
+        self.out_channels = c2
         self.wt_levels = wt_levels
-        self.s = s
-        self.d = 1
+        self.stride = s
+        self.dilation = 1
 
         self.wt_filter, self.iwt_filter = create_wavelet_filter(wt_type, c1, c1, torch.float)
         self.wt_filter = nn.Parameter(self.wt_filter, requires_grad=False)
@@ -363,7 +364,7 @@ class WTConv2d(nn.Module):
             [_ScaleModule([1,c1*4,1,1], s=0.1) for _ in range(self.wt_levels)]
         )
 
-        if self.s > 1:
+        if self.stride > 1:
             self.do_stride = nn.AvgPool2d(kernel_size=1, stride=s)
         else:
             self.do_stride = None

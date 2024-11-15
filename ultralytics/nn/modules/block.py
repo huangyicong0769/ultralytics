@@ -55,6 +55,7 @@ __all__ = (
     "SCDown",
     "SEAttention",
     "MCA",
+    "MCWA",
     "pMCA",
     "MSSA",
     "LSKMCA",
@@ -1199,6 +1200,9 @@ class MCAGate(nn.Module):
         self.weight = nn.Parameter(torch.rand(2))
 
     def forward(self, x):
+        return x * self._get_weight(x).expand_as(x)
+
+    def _get_weight(self, x):
         f = [pool(x) for pool in self.pools]
 
         if len(f) == 1:
@@ -1213,9 +1217,7 @@ class MCAGate(nn.Module):
         out = self.conv(out)
         out = out.permute(0, 3, 2, 1).contiguous()
         out = self.sigmoid(out)
-        out = out.expand_as(x)
-
-        return x*out
+        return out
 
 class LSKMCAGate(MCAGate):
     def __init__(self, k1=3, k2=5, pool_types=['avg', 'std']):
@@ -1285,6 +1287,27 @@ class MCA(nn.Module):
             return 1/3*sum(self.transplit(x))
         else:
             return 1/2*sum(self.transplit(x))
+
+class MCWA(MCA):
+    def __init__(self, c1, no_spatial=False):
+        super().__init__(c1, no_spatial)
+        assert no_spatial is False
+    
+    def forward(self, x):
+        return x + x * (2 * self.transplit(x) - 1)
+    
+    def transplit(self, x):
+        x_h = x.permute(0, 2, 1, 3).contiguous()
+        x_h = self.h_cw._get_weight(x_h).permute(0, 2, 1, 3).contiguous()
+        # print(f"h_cw: x{x.shape}, f{tmp.shape}")
+
+        x_w = x.permute(0, 3, 2, 1).contiguous()
+        x_w = self.w_hc._get_weight(x_w).permute(0, 3, 2, 1).contiguous()
+        # print(f"w_hc: x{x.shape}, f{tmp.shape}")
+
+        x_c = self.c_hw._get_weight(x)
+        # print(f"c_hw: x{x.shape}, f{tmp.shape}")
+        return x_h * x_w * x_c
 
 class pMCA(MCA):
     def __init__(self, c, no_spatial=False):

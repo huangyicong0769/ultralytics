@@ -58,6 +58,7 @@ from .block import (
     SCDown,
     SEAttention,
     MCA,
+    MCWA,
     pMCA,
     LSKMCA,
     MSSA,

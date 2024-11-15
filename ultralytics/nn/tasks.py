@@ -65,6 +65,7 @@ from ultralytics.nn.modules import (
     CBAM,
     SEAttention,
     MCA,
+    MCWA,
     pMCA,
     MSSA,
     LSKMCA,
@@ -100,6 +101,7 @@ from ultralytics.nn.modules import (
     S2fMCA,
     FMF,
     WTC2f,
+    WTConv,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -240,7 +242,7 @@ class BaseModel(nn.Module):
         """
         if not self.is_fused():
             for m in self.model.modules():
-                if isinstance(m, (Conv, Conv2, DWConv)) and hasattr(m, "bn"):
+                if isinstance(m, (Conv, Conv2, DWConv)) and hasattr(m, "bn") and not isinstance(m, WTConv):
                     if isinstance(m, Conv2):
                         m.fuse_convs()
                     m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
