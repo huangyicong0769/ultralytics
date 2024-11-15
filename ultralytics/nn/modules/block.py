@@ -2288,14 +2288,13 @@ class WTBottleneck(nn.Module):
         self.shortcut = shortcut and c1==c2
         self.c = int(c2 * e)
         self.cv1 = Conv(c1, self.c)
-        self.cv2 = WTConv(self.c, self.c, k, wt_levels)
-        self.us = F.interpolate
+        self.cv2 = WTConv(self.c, self.c, k, wt_levels=wt_levels)
         self.cv3 = Conv(self.c, c2)
         self.attn = attn(c2)
         
     def forward(self, x):
         H, W = x.shape[2:]
-        y = self.attn(self.cv3(self.us(self.cv2(self.cv1(x)), (H, W), mode='bilinear', align_corners=True)))
+        y = self.attn(self.cv3(self.cv2(self.cv1(x))))
         return x +  y if self.shortcut else y
     
 class WTC2f(C2fAttn):
