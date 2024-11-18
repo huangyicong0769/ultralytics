@@ -89,6 +89,7 @@ __all__ = (
     "S2fMCA",
     "FMF",
     "WTC2f",
+    "WTEEC2f",
 )
 
 
@@ -1670,9 +1671,6 @@ class Inject(nn.Module):
             self.w1, self.w2 = torch.tensor(1.0, requires_grad=True), torch.tensor(1.0, requires_grad=True)
 
     def forward(self, x:list[torch.Tensor]):
-
-        # print(f"{x[0].shape}, {x[1][self.index].shape}")
-
         x1 = self.conv1(x[0])
         x2 = x[1][self.index]
 
@@ -2301,3 +2299,82 @@ class WTC2f(C2fAttn):
     def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, wt_levels=1, k=3, e=0.5):
         super().__init__(c1, c2, n, attn, shortcut, 1, e)
         self.m = nn.ModuleList(WTBottleneck(self.c, self.c, attn, shortcut, wt_levels, k, e) for _ in range(n))
+        
+class WTEEC2f(C2fAttn):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, wt_levels=1, k=3, e=0.5):
+        super().__init__(c1, c2, n, attn, shortcut, 1, e)
+        self.m = nn.ModuleList(WTBottleneck(self.c, self.c, attn, shortcut, wt_levels, k, e) for _ in range(n))
+        self.ee = MEEM(self.c)
+        self.cv2 = Conv((3 + n) * self.c, c2)
+        
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        y.append(self.ee(y[0]))
+        return self.cv2(torch.cat(y, 1))
+        
+class MEEM(nn.Module):
+    """Multi-scale Edge Enhancement Module
+    http://arxiv.org/abs/2408.04326
+    """
+    def __init__(self, c1, n = 3, e=0.5):
+        super().__init__()
+        self.n = n
+        self.c = int(c1 * e)
+        
+        self.cv1 = Conv(c1, self.c, 1, act=nn.Sigmoid())
+        # self.pool = nn.AvgPool2d(3, stride= 1,padding = 1)
+        # self.cv2 = nn.ModuleList(Conv(self.c, self.c, 1, act=nn.Sigmoid()) for _ in range(n))
+        # self.ee = nn.ModuleList(EdgeEnhancer(self.c) for _ in range(n))
+        self.m = nn.ModuleList(nn.Sequential(nn.AvgPool2d(3, stride=1, padding=1),
+                                             Conv(self.c, self.c, 1, act=nn.Sigmoid()),
+                                             EdgeEnhancer(self.c)) for _ in range(n))
+        self.cv3 = Conv(self.c * (n + 1), c1, 1)
+    
+    def forward(self, x):
+        # x = self.cv1(x)
+        # y = x
+        # for i in range(self.n):
+        #     x = self.cv2[i](self.pool(x))
+        #     y = torch.cat([out, self.ee[i](x)], dim = 1)
+        # return self.cv3(y)
+        y = [self.cv1(x)]
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv3(torch.cat(y, 1))
+
+class EdgeEnhancer(nn.Module):
+    """http://arxiv.org/abs/2408.04326"""
+    def __init__(self, c):
+        super().__init__()
+        self.cv = Conv(c, c, 1, act=nn.Sigmoid())
+        self.pool = nn.AvgPool2d(3, stride= 1, padding = 1)
+    
+    def forward(self, x):
+        return x + self.cv(x - self.pool(x))
+    
+class DetailEnhancement(nn.Module):
+    """http://arxiv.org/abs/2408.04326"""
+    def __init__(self, c1, c2, e=1):
+        super().__init__()
+        self.c = int(c2 * e)
+        self.cv1 = Conv(3, self.c, 3)
+        self.img_er = MEEM(self.c)
+        self.feature_upsample = nn.Sequential(
+            Conv(c1 * 2, c1, 3),
+            nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = False),
+            Conv(c1, c1, 3),
+            nn.Upsample(scale_factor = 2, mode = 'bilinear', align_corners = False),
+            Conv(c1, self.c, 3)
+        )
+        self.cv2 = Conv(self.c * 2, c2, 3)
+    
+    def forward(self, x:list[torch.Tensor]):
+        img, feature, b_feature = x # [3, 640, 640], [c1, 160, 160], [c1, 160, 160]
+        
+        feature = torch.cat([feature, b_feature], dim = 1) # -> [2*c1]
+        feature = self.feature_upsample(feature) # [2*c1, 160, 160] -> [c, 640, 640]
+
+        img_feature = self.cv1(img) # [3, 640, 640] -> [c, 640, 640]
+        img_feature = self.img_er(img_feature) + img_feature # -> [c, 640, 640]
+
+        return self.cv2(torch.cat([feature, img_feature], dim = 1)) # [2*c, 640, 640] -> [c2, 640, 640]

@@ -95,6 +95,7 @@ from .block import (
     FMF,
     WTBottleneck,
     WTC2f,
+    WTEEC2f,
 )
 from .conv import (
     CBAM,
@@ -235,5 +236,6 @@ __all__ = (
     "FMF",
     "WTConv",
     "WTBottleneck",
-    "WTC2f"
+    "WTC2f",
+    "WTEEC2f",
 )
