@@ -71,7 +71,7 @@ def box_iou(box1, box2, eps=1e-7):
     return inter / ((a2 - a1).prod(2) + (b2 - b1).prod(2) - inter + eps)
 
 
-def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7):
+def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, MPDIoU=False, WIoUv1=False, WIoUv2=False, eps=1e-7):
     """
     Calculate Intersection over Union (IoU) of box1(1, 4) to box2(n, 4).
 
@@ -83,6 +83,9 @@ def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7
         GIoU (bool, optional): If True, calculate Generalized IoU. Defaults to False.
         DIoU (bool, optional): If True, calculate Distance IoU. Defaults to False.
         CIoU (bool, optional): If True, calculate Complete IoU. Defaults to False.
+        MPDIoU (bool, optional): if True, calculate Minimum Point Distance IoU. Defaults to False
+        WIoUv1 (bool, optional): if True, calculate Wise IoU v1. Defaults to False
+        WIoUv2 (bool, optional): if True, calculate Wise IoU v2. Defaults to False
         eps (float, optional): A small value to avoid division by zero. Defaults to 1e-7.
 
     Returns:
@@ -110,10 +113,12 @@ def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7
 
     # IoU
     iou = inter / union
-    if CIoU or DIoU or GIoU:
+    if WIoUv2:
+        self = WIoU_Scale(1 - (inter / union))
+    if CIoU or DIoU or GIoU or MPDIoU or WIoUv1 or WIoUv2:
         cw = b1_x2.maximum(b2_x2) - b1_x1.minimum(b2_x1)  # convex (smallest enclosing box) width
         ch = b1_y2.maximum(b2_y2) - b1_y1.minimum(b2_y1)  # convex height
-        if CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+        if CIoU or DIoU or WIoUv1 or WIoUv2:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
             c2 = cw.pow(2) + ch.pow(2) + eps  # convex diagonal squared
             rho2 = (
                 (b2_x1 + b2_x2 - b1_x1 - b1_x2).pow(2) + (b2_y1 + b2_y2 - b1_y1 - b1_y2).pow(2)
@@ -123,11 +128,51 @@ def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7
                 with torch.no_grad():
                     alpha = v / (v - iou + (1 + eps))
                 return iou - (rho2 / c2 + v * alpha)  # CIoU
+            if WIoUv1: # WIoU v1 https://arxiv.org/abs/2301.10051
+                return iou, torch.exp((rho2 / c2)) # WIoU v1
+            if WIoUv2: # WIoU v2
+                return getattr(WIoU_Scale, '_scaled_loss')(self), (1 - iou) * torch.exp((rho2 / c2))
             return iou - rho2 / c2  # DIoU
+        if MPDIoU:
+            sq_sum = (cw ** 2) + (ch ** 2)
+            d12 = (b2_x1 - b1_x1) ** 2 + (b2_y1 - b1_y1) ** 2
+            d22 = (b2_x2 - b1_x2) ** 2 + (b2_y2 - b1_y2) ** 2
+            return iou - (d12 / sq_sum) - (d22 / sq_sum) # MPDIoU https://arxiv.org/abs/2307.07662v1
         c_area = cw * ch + eps  # convex area
         return iou - (c_area - union) / c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
     return iou  # IoU
 
+class WIoU_Scale:
+    ''' monotonous: {
+            None: origin v1
+            True: monotonic FM v2
+            False: non-monotonic FM v3
+        }
+        momentum: The momentum of running mean'''
+    
+    iou_mean = 1.
+    monotonous = False
+    _momentum = 1 - 0.5 ** (1 / 7000)
+    _is_train = True
+ 
+    def __init__(self, iou):
+        self.iou = iou
+        self._update(self)
+    
+    @classmethod
+    def _update(cls, self):
+        if cls._is_train: cls.iou_mean = (1 - cls._momentum) * cls.iou_mean + cls._momentum * self.iou.detach().mean().item()
+    
+    @classmethod
+    def _scaled_loss(cls, self, gamma=1.9, delta=3):
+        if isinstance(self.monotonous, bool):
+            if self.monotonous:
+                return (self.iou.detach() / self.iou_mean).sqrt()
+            else:
+                beta = self.iou.detach() / self.iou_mean
+                alpha = delta * torch.pow(gamma, beta - delta)
+                return beta / alpha
+        return 1
 
 def mask_iou(mask1, mask2, eps=1e-7):
     """

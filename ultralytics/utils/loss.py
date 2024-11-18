@@ -91,16 +91,35 @@ class DFLoss(nn.Module):
 class BboxLoss(nn.Module):
     """Criterion class for computing training losses during training."""
 
-    def __init__(self, reg_max=16):
+    def __init__(self, reg_max=16, IoU_type='CIoU'):
         """Initialize the BboxLoss module with regularization maximum and DFL settings."""
         super().__init__()
+        self.iou_type = IoU_type
         self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
 
     def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
         """IoU loss."""
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
-        loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
+        
+        match self.iou_type:
+            case 'CIoU':
+                iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+            case 'MPDIoU':
+                iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, MPDIoU=True)
+            case 'WIoUv1':
+                iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, WIoUv1=True)
+            case 'WIoUv2':
+                iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, WIoUv2=True)
+            case _:
+                iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False)
+        
+        match self.iou_type:
+            case 'WIoUv1':
+                loss_iou = ((1.0 - iou[0]) * iou[1].detach() * weight).sum() / target_scores_sum
+            case 'WIoUv2':
+                loss_iou = (iou[0] * iou[1] * weight).sum() / target_scores_sum
+            case _:
+                loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
         if self.dfl_loss:
@@ -174,7 +193,7 @@ class v8DetectionLoss:
         self.use_dfl = m.reg_max > 1
 
         self.assigner = TaskAlignedAssigner(topk=tal_topk, num_classes=self.nc, alpha=0.5, beta=6.0)
-        self.bbox_loss = BboxLoss(m.reg_max).to(device)
+        self.bbox_loss = BboxLoss(m.reg_max, self.hyp.iou_type).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 
     def preprocess(self, targets, batch_size, scale_tensor):
