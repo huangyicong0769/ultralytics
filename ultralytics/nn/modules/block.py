@@ -1294,7 +1294,7 @@ class MCWA(MCA):
         assert no_spatial is False
     
     def forward(self, x):
-        return x + x * (2 * self.transplit(x) - 1)
+        return x *  self.transplit(x)
     
     def transplit(self, x):
         x_h = x.permute(0, 2, 1, 3).contiguous()
