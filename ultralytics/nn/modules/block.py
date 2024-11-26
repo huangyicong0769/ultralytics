@@ -90,6 +90,7 @@ __all__ = (
     "FMF",
     "WTC2f",
     "WTEEC2f",
+    "WTCC2f",
 )
 
 
@@ -2378,3 +2379,17 @@ class DetailEnhancement(nn.Module):
         img_feature = self.img_er(img_feature) + img_feature # -> [c, 640, 640]
 
         return self.cv2(torch.cat([feature, img_feature], dim = 1)) # [2*c, 640, 640] -> [c2, 640, 640]
+    
+class WTCC2f(C2fAttn):
+    def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, wt_levels=1, k=3, e=0.5):
+        super().__init__(c1, c2, n, attn, shortcut, 1, e)
+        self.wt = WTBottleneck(self.c, self.c, attn, shortcut, wt_levels, k, e)
+        self.ee = MEEM(self.c)
+        self.cv2 = Conv((4 + n) * self.c, c2)
+        
+    def forward(self, x):
+        y = list(self.cv1(x).chunk(2, 1))
+        y.extend(m(y[-1]) for m in self.m)
+        y.append(self.wt(y[0]))
+        y.append(self.ee(y[0]))
+        return self.cv2(torch.cat(y, 1))
