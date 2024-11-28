@@ -53,7 +53,7 @@ from ultralytics.utils.torch_utils import (
     strip_optimizer,
     torch_distributed_zero_first,
 )
-
+from .optimizer import Lion, SophiaG, Sophia, PIDAccOptimizer_SI, PIDAccOptimizer_SI_AAdRMS, PIDAccOptimizer_Sym_Tz
 
 class BaseTrainer:
     """
@@ -312,6 +312,7 @@ class BaseTrainer:
             momentum=self.args.momentum,
             decay=weight_decay,
             iterations=iterations,
+            k=(self.args.kp, self.args.ki, self.args.kd)
         )
         # Scheduler
         self._setup_scheduler()
@@ -750,7 +751,7 @@ class BaseTrainer:
             LOGGER.info("Closing dataloader mosaic")
             self.train_loader.dataset.close_mosaic(hyp=copy(self.args))
 
-    def build_optimizer(self, model, name="auto", lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5):
+    def build_optimizer(self, model, name="auto", lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5, k=(50., 575., 50.)):
         """
         Constructs an optimizer for the given model, based on the specified optimizer name, learning rate, momentum,
         weight decay, and number of iterations.
@@ -797,10 +798,20 @@ class BaseTrainer:
             optimizer = optim.RMSprop(g[2], lr=lr, momentum=momentum)
         elif name == "SGD":
             optimizer = optim.SGD(g[2], lr=lr, momentum=momentum, nesterov=True)
+        elif name == "Lion":
+            optimizer = Lion(g[2], lr=lr, betas=(momentum, 0.99))
+        elif name == "SophiaG":
+            optimizer = SophiaG(g[2], lr=lr, betas=(momentum, 0.999), weight_decay=0.0)
+        elif name == "PIDAO_SI":
+            optimizer = PIDAccOptimizer_SI(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
+        elif name == "PIDAO_AdSI":
+            optimizer = PIDAccOptimizer_SI_AAdRMS(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
+        elif name == "PIDAO_ST":
+            optimizer = PIDAccOptimizer_SI(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
         else:
             raise NotImplementedError(
                 f"Optimizer '{name}' not found in list of available optimizers "
-                f"[Adam, AdamW, NAdam, RAdam, RMSProp, SGD, auto]."
+                f"[Adam, AdamW, NAdam, RAdam, RMSProp, SGD, Lion, SophiaG, PIDAO_SI, PIDAO_AdSI, PIDAO_ST, auto]."
                 "To request support for addition optimizers please visit https://github.com/ultralytics/ultralytics."
             )
 
