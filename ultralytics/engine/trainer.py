@@ -305,6 +305,8 @@ class BaseTrainer:
         self.accumulate = max(round(self.args.nbs / self.batch_size), 1)  # accumulate loss before optimizing
         weight_decay = self.args.weight_decay * self.batch_size * self.accumulate / self.args.nbs  # scale weight_decay
         iterations = math.ceil(len(self.train_loader.dataset) / max(self.batch_size, self.args.nbs)) * self.epochs
+        if self.args.kp < 0:
+            self.args.kp = 1/(self.args.lr0*self.args.momentum)
         self.optimizer = self.build_optimizer(
             model=self.model,
             name=self.args.optimizer,
@@ -802,12 +804,14 @@ class BaseTrainer:
             optimizer = Lion(g[2], lr=lr, betas=(momentum, 0.99))
         elif name == "SophiaG":
             optimizer = SophiaG(g[2], lr=lr, betas=(momentum, 0.999), weight_decay=0.0)
-        elif name == "PIDAO_SI":
-            optimizer = PIDAccOptimizer_SI(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
-        elif name == "PIDAO_AdSI":
-            optimizer = PIDAccOptimizer_SI_AAdRMS(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
-        elif name == "PIDAO_ST":
-            optimizer = PIDAccOptimizer_SI(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
+        elif name in {"PIDAO_SI", "PIDAO_AdSI", "PIDAO_ST"}:
+            # assert k[0] > k[1]/momentum + k[2]*momentum
+            if name == "PIDAO_SI":
+                optimizer = PIDAccOptimizer_SI(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
+            elif name == "PIDAO_AdSI":
+                optimizer = PIDAccOptimizer_SI_AAdRMS(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
+            elif name == "PIDAO_ST":
+                optimizer = PIDAccOptimizer_SI(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
         else:
             raise NotImplementedError(
                 f"Optimizer '{name}' not found in list of available optimizers "
