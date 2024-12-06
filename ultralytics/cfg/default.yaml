@@ -97,7 +97,7 @@ warmup_bias_lr: 0.1 # (float) warmup initial bias lr
 box: 7.5 # (float) box loss gain
 cls: 0.5 # (float) cls loss gain (scale with pixels)
 dfl: 1.5 # (float) dfl loss gain
-kp: -1.0 # (float) PIDAO kp
+kp: -1.0 # (float) PIDAO kp (-1 := lr0 * momentum)
 ki: 575.0 # (float) PIDAO ki
 kd: 50.0 # (float) PIDAO kd
 pose: 12.0 # (float) pose loss gain
