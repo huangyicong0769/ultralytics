@@ -53,7 +53,7 @@ from ultralytics.utils.torch_utils import (
     strip_optimizer,
     torch_distributed_zero_first,
 )
-from .optimizer import Lion, SophiaG, Sophia, PIDAccOptimizer_SI, PIDAccOptimizer_SI_AAdRMS, PIDAccOptimizer_Sym_Tz
+from .optimizer import Lion, SophiaG, Sophia, PIDAccOptimizer_SI, PIDAccOptimizer_SI_AAdRMS, PIDAccOptimizer_Sym_Tz, CAdamW, AdamW
 
 class BaseTrainer:
     """
@@ -799,7 +799,7 @@ class BaseTrainer:
                 else:  # weight (with decay)
                     g[0].append(param)
 
-        optimizers = {"Adam", "Adamax", "AdamW", "NAdam", "RAdam", "RMSProp", "SGD", "Lion", "SophiaG", "PIDAO_SI", "PIDAO_AdSI", "PIDAO_ST", "auto"}
+        optimizers = {"Adam", "Adamax", "AdamW", "NAdam", "RAdam", "RMSProp", "CAdamW", "SGD", "Lion", "SophiaG", "PIDAO_SI", "PIDAO_AdSI", "PIDAO_ST", "auto"}
         name = {x.lower(): x for x in optimizers}.get(name.lower())
         if name in {"Adam", "Adamax", "AdamW", "NAdam", "RAdam"}:
             optimizer = getattr(optim, name, optim.Adam)(g[2], lr=lr, betas=(momentum, 0.999), weight_decay=0.0)
@@ -818,7 +818,11 @@ class BaseTrainer:
             elif name == "PIDAO_AdSI":
                 optimizer = PIDAccOptimizer_SI_AAdRMS(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
             elif name == "PIDAO_ST":
-                optimizer = PIDAccOptimizer_SI(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
+                optimizer = PIDAccOptimizer_Sym_Tz(g[2], lr=lr, momentum=momentum, weight_decay=0.0, kp=k[0], ki=k[1], kd=k[2], nesterov=True)
+        elif name == "CAdamW":
+            optimizer = CAdamW(g[2], lr=lr, betas=(momentum, 0.999), weight_decay=0.0)
+        # elif name == "AdamW":
+        #     optimizer = AdamW(g[2], lr=lr, betas=(momentum, 0.999), weight_decay=0.0)
         else:
             raise NotImplementedError(
                 f"Optimizer '{name}' not found in list of available optimizers {optimizers}. "
