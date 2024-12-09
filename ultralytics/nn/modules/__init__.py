@@ -99,6 +99,8 @@ from .block import (
     WTEEC2f,
     WTCC2f,
     DetailEnhancement,
+    MogaBlock,
+    ConvMogaPB,
 )
 from .conv import (
     CBAM,
@@ -244,4 +246,6 @@ __all__ = (
     "WTEEC2f",
     "WTCC2f",
     "DetailEnhancement",
+    "MogaBlock",
+    "ConvMogaPB",
 )

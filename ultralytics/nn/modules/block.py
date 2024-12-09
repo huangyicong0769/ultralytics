@@ -93,6 +93,8 @@ __all__ = (
     "WTEEC2f",
     "WTCC2f",
     "DetailEnhancement",
+    "MogaBlock",
+    "ConvMogaPB",
 )
 
 
@@ -2288,15 +2290,16 @@ class FMF(nn.Module):
     http://arxiv.org/abs/2408.00438
     """
 
-    def __init__(self, c1, c2, k=[1, 3, 5, 7], e=0.5):
+    def __init__(self, c1, c2, k=[1, 3, 5, 7], drop=0., e=0.5):
         super().__init__()
         self.c = int(c2 * e)
         self.m = nn.ModuleList(DWConv(c1, self.c, kl) for kl in k)
         self.cv1 = Conv(c1, self.c)
         self.cv2 = Conv(self.c, c2)
+        self.drop = nn.Dropout(drop)
 
     def forward(self, x):
-        return self.cv2(self.cv1(x) + torch.stack([cv(x) for cv in self.m], dim=0).mean(dim=0))
+        return self.drop(self.cv2(self.cv1(x) + torch.stack([cv(x) for cv in self.m], dim=0).mean(dim=0)))
     
 class WTBottleneck(nn.Module):
     def __init__(self, c1, c2, attn=nn.Identity, shortcut=True, wt_levels=1, k=3, e=0.5):
@@ -2401,3 +2404,205 @@ class WTCC2f(C2fAttn):
         y.append(self.wt(y[0]))
         y.append(self.ee(y[0]))
         return self.cv2(torch.cat(y, 1))
+
+class ElementScale(nn.Module):
+    def __init__(self, c, init_value=0., requires_grad=True):
+        super(ElementScale, self).__init__()
+        self.scale = nn.Parameter(
+            init_value * torch.ones((1, c, 1, 1)),
+            requires_grad=requires_grad
+        )
+
+    def forward(self, x):
+        return x * self.scale
+
+class ChannelAggregationFFN(nn.Module):
+    """An implementation of FFN with Channel Aggregation.
+
+    Args:
+        c (int): The feature dimension. Same as `MultiheadAttention`.
+        c_f (int): The hidden dimension of FFNs.
+        k (int): The depth-wise conv kernel size as the depth-wise convolution. Defaults to 3.
+        act: The type of activation. Defaults to nn.GELU().
+        drop (float, optional): Probability of an element to be zeroed in FFN. Default 0.0.
+    """
+
+    def __init__(self, c, c_f, k=3, act=nn.GELU(), drop=0.):
+        super(ChannelAggregationFFN, self).__init__()
+
+        self.c = c
+        self.c_f = c_f
+
+        self.fc1 = Conv(c, c_f, act=False)
+        self.dwconv = DWConv(c_f, c_f, k, act=act)
+        self.fc2 = nn.Conv2d(
+            in_channels=c_f,
+            out_channels=c,
+            kernel_size=1)
+        self.fc2 = Conv(c_f, c, act=False)
+        self.drop = nn.Dropout(drop)
+        self.decompose = Conv(c_f, 1, act=act)
+        self.sigma = ElementScale(self.c_f, init_value=1e-5, requires_grad=True)
+
+    def feat_decompose(self, x):
+        return x + self.sigma(x - self.decompose(x)) # x_d: [B, C, H, W] -> [B, 1, H, W]
+
+    def forward(self, x):
+        # proj 1
+        x = self.fc1(x)
+        x = self.dwconv(x)
+        x = self.drop(x)
+        # proj 2
+        x = self.feat_decompose(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
+class MultiOrderDWConv(nn.Module):
+    """Multi-order Features with Dilated DWConv Kernel.
+
+    Args:
+        c (int): Number of input channels.
+        dw_d (list): Dilations of three DWConv layers.
+        c_split (list): The raletive ratio of three splited channels.
+    """
+    def __init__(self, c, dw_d=[1, 2, 3,], c_split=[1, 3, 4,],):
+        super(MultiOrderDWConv, self).__init__()
+
+        self.split_r = [i / sum(c_split) for i in c_split]
+        self.c1 = int(self.split_r[1] * c)
+        self.c2 = int(self.split_r[2] * c)
+        self.c0 = c - self.c1 - self.c2
+        self.c = c
+        
+        assert len(dw_d) == len(c_split) == 3
+        assert 1 <= min(dw_d) and max(dw_d) <= 3
+        assert c % sum(c_split) == 0
+
+        self.DW_conv0 = DWConv(self.c, self.c, 5, d=dw_d[0], act=False) # basic DW conv
+        self.DW_conv1 = DWConv(self.c1, self.c1, 5, d=dw_d[1], act=False) # DW conv 1
+        self.DW_conv2 = DWConv(self.c2, self.c2, 7, d=dw_d[2], act=False) # DW conv 2
+        self.PW_conv = Conv(self.c, self.c, act=False) # a channel convolution
+
+    def forward(self, x):
+        x_0 = self.DW_conv0(x)
+        x_1 = self.DW_conv1(x_0[:, self.c0: self.c0+self.c1, ...])
+        x_2 = self.DW_conv2(x_0[:, self.c-self.c2:, ...])
+        x = torch.cat([x_0[:, :self.c0, ...], x_1, x_2], dim=1)
+        return self.PW_conv(x)
+
+class MultiOrderGatedAggregation(nn.Module):
+    '''Spatial Block with Multi-order Gated Aggregation.[https://arxiv.org/pdf/2211.03295]
+       https://github.com/Westlake-AI/MogaNet
+
+    Args:
+        c (int): Number of input channels.
+        attn_dw_d(list): Dilations of three DWConv layers.
+        attn_c_split (list): The raletive ratio of splited channels.
+        attn_act: The activation for Spatial Block. Defaults to nn.SiLU().
+    '''
+    def __init__(self, c, attn_dw_d=[1, 2, 3], attn_c_split=[1, 3, 4], attn_act=nn.SiLU(), attn_force_fp32=False,):
+        super(MultiOrderGatedAggregation, self).__init__()
+
+        self.embed_dims = c
+        self.attn_force_fp32 = attn_force_fp32
+        self.proj_1 = nn.Conv2d(in_channels=c, out_channels=c, kernel_size=1)
+        self.gate = nn.Conv2d(in_channels=c, out_channels=c, kernel_size=1)
+        self.value = MultiOrderDWConv(c=c, dw_d=attn_dw_d, c_split=attn_c_split,)
+        self.proj_2 = nn.Conv2d(in_channels=c, out_channels=c, kernel_size=1)
+
+        # activation for gating and value
+        self.act_value = attn_act
+        self.act_gate = attn_act
+
+        # decompose
+        self.sigma = ElementScale(c, init_value=1e-5, requires_grad=True)
+
+    def feat_decompose(self, x):
+        x = self.proj_1(x)
+        x_d = F.adaptive_avg_pool2d(x, output_size=1) # x_d: [B, C, H, W] -> [B, C, 1, 1]
+        x = x + self.sigma(x - x_d)
+        return self.act_value(x)
+
+    def forward_gating(self, g, v):
+        with torch.autocast(device_type='cuda', enabled=False):
+            g = g.to(torch.float32)
+            v = v.to(torch.float32)
+            return self.proj_2(self.act_gate(g) * self.act_gate(v))
+
+    def forward(self, x):
+        shortcut = x.clone()
+        x = self.feat_decompose(x) # proj 1x1
+        # gating and value branch
+        g = self.gate(x)
+        v = self.value(x)
+        # aggregation
+        if not self.attn_force_fp32:
+            x = self.proj_2(self.act_gate(g) * self.act_gate(v))
+        else:
+            x = self.forward_gating(self.act_gate(g), self.act_gate(v))
+        return x + shortcut
+    
+class MogaBlock(nn.Module):
+    """A block of MogaNet.[https://arxiv.org/pdf/2211.03295]
+       https://github.com/Westlake-AI/MogaNet
+
+    Args:
+        embed_dims (int): Number of input channels.
+        ffn_ratio (float): The expansion ratio of feedforward network hidden
+            layer channels. Defaults to 4.
+        drop_rate (float): Dropout rate after embedding. Defaults to 0.
+        drop_path_rate (float): Stochastic depth rate. Defaults to 0.1.
+        act_type (str): The activation type for projections and FFNs.
+            Defaults to 'GELU'.
+        norm_cfg (str): The type of normalization layer. Defaults to 'BN'.
+        init_value (float): Init value for Layer Scale. Defaults to 1e-5.
+        attn_dw_dilation (list): Dilations of three DWConv layers.
+        attn_channel_split (list): The raletive ratio of splited channels.
+        attn_act_type (str): The activation type for the gating branch.
+            Defaults to 'SiLU'.
+    """
+
+    def __init__(self, c, ffn_r=4., drop=0., droppath=0., act=nn.GELU(), init_value=1e-5, attn_dw_d=[1, 2, 3], attn_c_split=[1, 3, 4], attn_act=nn.SiLU(), attn_force_fp32=False,):
+        super(MogaBlock, self).__init__()
+        self.c2 = c
+        self.norm1 = nn.BatchNorm2d(c)
+
+        # spatial attention
+        self.attn = MultiOrderGatedAggregation(c, attn_dw_d=attn_dw_d, attn_c_split=attn_c_split, attn_act=attn_act, attn_force_fp32=attn_force_fp32,)
+        self.drop_path = DropPath(droppath) if droppath > 0. else nn.Identity()
+
+        self.norm2 = nn.BatchNorm2d(c)
+
+        # channel MLP
+        c_e = int(c * ffn_r)
+        self.mlp = ChannelAggregationFFN(c=c, c_f=c_e, act=act, drop=drop,) # DWConv + Channel Aggregation FFN
+
+        # init layer scale
+        self.layer_scale_1 = nn.Parameter(init_value * torch.ones((1, c, 1, 1)), requires_grad=True)
+        self.layer_scale_2 = nn.Parameter(init_value * torch.ones((1, c, 1, 1)), requires_grad=True)
+
+    def forward(self, x):
+        # spatial
+        identity = x
+        x = self.layer_scale_1 * self.attn(self.norm1(x))
+        x = identity + self.drop_path(x)
+        # channel
+        identity = x
+        x = self.layer_scale_2 * self.mlp(self.norm2(x))
+        x = identity + self.drop_path(x)
+        return x
+
+class ConvMogaPB(nn.Module):
+    def __init__(self, c1, c2, n=1, ffn_r=4, e=1., drop=0.):
+        super().__init__()
+        self.c = int(c2 * e) // 2
+        self.conv = C2f(self.c, self.c, n, shortcut=True)
+        self.moga = MogaBlock(self.c, ffn_r, drop)
+        self.pwconv1 = nn.Conv2d(c1, 2 * self.c, 1, padding='same')
+        self.pwconv2 = nn.Conv2d(2 * self.c, c2, 1, padding='same')
+        
+    def forward(self, x:torch.Tensor)->torch.Tensor:
+        x1, x2 = torch.split(self.pwconv1(x), [self.c, self.c], dim=1)
+        return self.pwconv2(torch.cat([self.conv(x1), self.moga(x2)], dim=1))
+        
