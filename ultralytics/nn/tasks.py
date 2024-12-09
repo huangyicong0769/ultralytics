@@ -83,6 +83,7 @@ from ultralytics.nn.modules import (
     HighFAM,
     HighFSAM,
     HighIFM,
+    INXBHighIFM,
     ConvHighIFM,
     ConvHighLKSIFM,
     StarHighIFM,
@@ -104,6 +105,7 @@ from ultralytics.nn.modules import (
     WTConv,
     WTEEC2f,
     WTCC2f,
+    DetailEnhancement,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1132,7 +1134,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 args = args[:1]
             else:
                 c2 = sum(ch[x] for x in f)
-        elif m in {LowIFM, LowLKSIFM, HighIFM, ConvHighIFM, ConvHighLKSIFM, StarLowIFM, StarHighIFM}:
+        elif m in {LowIFM, LowLKSIFM, HighIFM, INXBHighIFM, ConvHighIFM, ConvHighLKSIFM, StarLowIFM, StarHighIFM}:
             c1, c2 = ch[f], args[0]
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
@@ -1143,6 +1145,12 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
             args = [c1, c2, *args[1:]]
+        elif m is DetailEnhancement:
+            assert ch[f[1]] == ch[f[2]]
+            ci, c1, c2 = ch[f[0]], ch[f[1]], args[0]
+            if c2 != nc:
+                c2 = make_divisible(min(c2, max_channels)*width, 8)
+            args = [c1, c2, ci, *args[1:]]
         elif m in {LowLAF}:
             c1, c2 = ch[f[-2]], args[0]
             if c2 != nc:

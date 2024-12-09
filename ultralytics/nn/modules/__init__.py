@@ -75,6 +75,7 @@ from .block import (
     HighFAM,
     HighFSAM,
     HighIFM,
+    INXBHighIFM,
     ConvHighIFM,
     ConvHighLKSIFM,
     StarHighIFM,
@@ -97,6 +98,7 @@ from .block import (
     WTC2f,
     WTEEC2f,
     WTCC2f,
+    DetailEnhancement,
 )
 from .conv import (
     CBAM,
@@ -217,6 +219,7 @@ __all__ = (
     "HighFAM",
     "HighFSAM",
     "HighIFM",
+    "INXBHighIFM",
     "ConvHighIFM",
     "ConvHighLKSIFM",
     "StarHighIFM",
@@ -240,4 +243,5 @@ __all__ = (
     "WTC2f",
     "WTEEC2f",
     "WTCC2f",
+    "DetailEnhancement",
 )

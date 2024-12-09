@@ -180,7 +180,8 @@ def carafe(x:torch.Tensor, mask:torch.Tensor|None=None, k=5, g=1, s=2)->torch.Te
     h_, w_ = h*s, w*s
     assert mask is not None
     # print(f"fCARAFE:x={x.shape}, mask={mask.shape}, s={s}")
-    x = F.upsample(x, scale_factor=s, mode='nearest')
+    # x = F.upsample(x, scale_factor=s, mode='nearest')
+    x = F.interpolate(x, scale_factor=s, mode='nearest')
     x = F.unfold(x, kernel_size=k, dilation=s, padding=k//2*s).view(b, c, -1, h_, w_)
     # print(f"fCARAFE:x={x.shape}")
     return torch.einsum('bkhw,bckhw->bchw', [mask, x])

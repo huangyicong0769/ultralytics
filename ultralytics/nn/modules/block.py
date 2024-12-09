@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose
 from .transformer import TransformerBlock, MLPBlock, LayerNorm2d, MLP, DropPath
 from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe, spatial_selective
 
@@ -72,6 +72,7 @@ __all__ = (
     "HighFAM",
     "HighFSAM",
     "HighIFM",
+    "INXBHighIFM",
     "ConvHighIFM",
     "ConvHighLSKIFM",
     "StarHighIFM",
@@ -91,6 +92,7 @@ __all__ = (
     "WTC2f",
     "WTEEC2f",
     "WTCC2f",
+    "DetailEnhancement",
 )
 
 
@@ -1564,7 +1566,7 @@ class HighFSAM(HighFAM):
 
 class ConvHighIFM(nn.Module):
     """ High-stage information fusion module.
-        Replace ViT to Conv
+        Replace ViT to RepVGGDW
     """
 
     def __init__(self, c1, c2, n=1, e=0.5):
@@ -1581,6 +1583,11 @@ class ConvHighIFM(nn.Module):
         # y = self.m(self.conv1(x)) + self.conv3(x)
         y = self.conv2(self.m(self.conv1(x)))
         return y
+
+class INXBHighIFM(ConvHighIFM):
+    def __init__(self, c1, c2, n=1, e=0.5):
+        super().__init__(c1, c2, n, e)
+        self.m = C2INXB(self.c_, self.c_, n=n, e=1)
 
 class ConvHighLKSIFM(ConvHighIFM):
     def __init__(self, c1, c2, n=1, e=0.5):
@@ -1654,7 +1661,7 @@ class HiLAF(nn.Module):
 class Inject(nn.Module):
     """Information injection module"""
 
-    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion']='bilinear'):
+    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion', 'Conv', 'ConvT', 'Same']='bilinear'):
         super().__init__()
         
         self.index = index
@@ -1670,7 +1677,13 @@ class Inject(nn.Module):
         elif self.sample == 'FreqFusion':
             self.us1 = FreqFusion(c2, c2)
             self.us2 = FreqFusion(c2, c2)
-            self.w1, self.w2 = torch.tensor(1.0, requires_grad=True), torch.tensor(1.0, requires_grad=True)
+            self.cv = Conv(2*c2, c2, act=False)
+        elif self.sample == 'Conv':
+            self.ds1 = Conv(c2, c2, 3, 2, act=False)
+            self.ds2 = Conv(c2, c2, 3, 2, act=False)
+        elif self.sample == 'ConvT':
+            self.us1 = ConvTranspose(c2, c2, act=False)
+            self.us2 = ConvTranspose(c2, c2, act=False)
 
     def forward(self, x:list[torch.Tensor]):
         x1 = self.conv1(x[0])
@@ -1681,19 +1694,22 @@ class Inject(nn.Module):
         x2 = self.conv3(x2)
 
         if self.sample == 'avgpool':
-            y = F.adaptive_avg_pool2d(x2, [H, W]) + x1 * F.adaptive_avg_pool2d(x_, [H, W])
+            x2, x_ = F.adaptive_avg_pool2d(x2, [H, W]), F.adaptive_avg_pool2d(x_, [H, W])
+        elif self.sample == 'Conv':
+            x2, x_ = self.ds1(x2), self.ds2(x_)
         elif self.sample == 'bilinear':
-            y = F.interpolate(x2, (H, W), mode='bilinear', align_corners=False) + x1 * F.interpolate(x_, (H, W), mode='bilinear', align_corners=False)
-        elif self.sample == 'carafe':
-            y = self.us1(x2) + x1 * self.us2(x_)
+            x2, x_ = F.interpolate(x2, (H, W), mode='bilinear', align_corners=False), F.interpolate(x_, (H, W), mode='bilinear', align_corners=False)
+        elif self.sample in {'carafe', 'ConvT'}:
+            x2, x_ = self.us1(x2), self.us2(x_)
         elif self.sample == 'FreqFusion':
             x2, x11 = self.us1(x_l=x2, x_h=x1)
             x_, x12 = self.us2(x_l=x_, x_h=x1)
-            x1 = (x11*self.w1+x12*self.w2)*0.5
-            y = x2 + x1 * x_
+            x1 = self.cv(torch.cat([x11, x12], dim=1))
         else:
-            raise NotImplementedError
+            if self.sample != 'Same':
+                raise NotImplementedError
 
+        y = x2 + x1 * x_
         return self.conv4(y)
 
 class CARAFE(nn.Module):
@@ -2300,12 +2316,12 @@ class WTBottleneck(nn.Module):
 class WTC2f(C2fAttn):
     def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, wt_levels=1, k=3, e=0.5):
         super().__init__(c1, c2, n, attn, shortcut, 1, e)
-        self.m = nn.ModuleList(WTBottleneck(self.c, self.c, attn, shortcut, wt_levels, k, e) for _ in range(n))
+        self.m = nn.ModuleList(WTBottleneck(self.c, self.c, attn, shortcut, wt_levels, k, e=1.0) for _ in range(n))
         
 class WTEEC2f(C2fAttn):
     def __init__(self, c1, c2, n=1, attn=nn.Identity, shortcut=False, wt_levels=1, k=3, e=0.5):
         super().__init__(c1, c2, n, attn, shortcut, 1, e)
-        self.m = nn.ModuleList(WTBottleneck(self.c, self.c, attn, shortcut, wt_levels, k, e) for _ in range(n))
+        self.m = nn.ModuleList(WTBottleneck(self.c, self.c, attn, shortcut, wt_levels, k, e=1.0) for _ in range(n))
         self.ee = MEEM(self.c)
         self.cv2 = Conv((3 + n) * self.c, c2)
         
@@ -2325,21 +2341,12 @@ class MEEM(nn.Module):
         self.c = int(c1 * e)
         
         self.cv1 = Conv(c1, self.c, 1, act=nn.Sigmoid())
-        # self.pool = nn.AvgPool2d(3, stride= 1,padding = 1)
-        # self.cv2 = nn.ModuleList(Conv(self.c, self.c, 1, act=nn.Sigmoid()) for _ in range(n))
-        # self.ee = nn.ModuleList(EdgeEnhancer(self.c) for _ in range(n))
         self.m = nn.ModuleList(nn.Sequential(nn.AvgPool2d(3, stride=1, padding=1),
                                              Conv(self.c, self.c, 1, act=nn.Sigmoid()),
                                              EdgeEnhancer(self.c)) for _ in range(n))
         self.cv3 = Conv(self.c * (n + 1), c1, 1)
     
     def forward(self, x):
-        # x = self.cv1(x)
-        # y = x
-        # for i in range(self.n):
-        #     x = self.cv2[i](self.pool(x))
-        #     y = torch.cat([out, self.ee[i](x)], dim = 1)
-        # return self.cv3(y)
         y = [self.cv1(x)]
         y.extend(m(y[-1]) for m in self.m)
         return self.cv3(torch.cat(y, 1))
@@ -2356,10 +2363,10 @@ class EdgeEnhancer(nn.Module):
     
 class DetailEnhancement(nn.Module):
     """http://arxiv.org/abs/2408.04326"""
-    def __init__(self, c1, c2, e=1):
+    def __init__(self, c1, c2, ci, e=1):
         super().__init__()
         self.c = int(c2 * e)
-        self.cv1 = Conv(3, self.c, 3)
+        self.cv1 = Conv(ci, self.c, 3)
         self.img_er = MEEM(self.c)
         self.feature_upsample = nn.Sequential(
             Conv(c1 * 2, c1, 3),
