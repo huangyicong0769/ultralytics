@@ -108,6 +108,8 @@ from ultralytics.nn.modules import (
     DetailEnhancement,
     MogaBlock,
     ConvMogaPB,
+    ConvMogaSB,
+    DySample,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1020,6 +1022,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         if m in {
             Classify,
             Conv,
+            nn.Conv2d,
             ConvTranspose,
             GhostConv,
             Bottleneck,
@@ -1067,6 +1070,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             WTEEC2f,
             WTCC2f,
             ConvMogaPB,
+            ConvMogaSB,
         }:
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
@@ -1110,6 +1114,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 WTEEC2f,
                 WTCC2f,
                 ConvMogaPB,
+                ConvMogaSB,
             }:
                 args.insert(2, n)  # number of repeats
                 n = 1
@@ -1167,8 +1172,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
             args = [sum(ch[x] for x in f), c2]
         elif m is Inject:
-            index = args[1]
-            c1, c2 = ch[f[1]][index], args[0]
+            c2, index = args[0], args[1]
+            c1 = ch[f[1]] if index == -1 else ch[f[1]][index]
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
             args = [c1, c2, *args[1:]]
@@ -1189,7 +1194,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is Split:
             c2 = [(make_divisible(min(arg, max_channels)*width, 8) if arg != nc else arg) for arg in args]
             args = [c2]
-        elif m in {CBAM, LSKblock, Star, MogaBlock}:
+        elif m in {CBAM, LSKblock, Star, MogaBlock, DySample}:
             c2 = ch[f]
             args = [c2, *args]
         elif m is CARAFE:

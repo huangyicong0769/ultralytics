@@ -34,7 +34,6 @@ def linear_init(module):
     if hasattr(module, "bias") and module.bias is not None:
         uniform_(module.bias, -bound, bound)
 
-
 def inverse_sigmoid(x, eps=1e-5):
     """Calculate the inverse sigmoid function for a tensor."""
     x = x.clamp(min=0, max=1)

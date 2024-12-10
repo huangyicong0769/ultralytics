@@ -101,6 +101,8 @@ from .block import (
     DetailEnhancement,
     MogaBlock,
     ConvMogaPB,
+    ConvMogaSB,
+    DySample,
 )
 from .conv import (
     CBAM,
@@ -248,4 +250,6 @@ __all__ = (
     "DetailEnhancement",
     "MogaBlock",
     "ConvMogaPB",
+    "ConvMogaSB",
+    "DySample",
 )

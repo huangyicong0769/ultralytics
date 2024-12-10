@@ -95,8 +95,9 @@ __all__ = (
     "DetailEnhancement",
     "MogaBlock",
     "ConvMogaPB",
+    "ConvMogaSB",
+    "DySample",
 )
-
 
 class DFL(nn.Module):
     """
@@ -1616,7 +1617,7 @@ class HighIFM(ConvHighIFM):
 class LowLAF(nn.Module):
     """Low-stage lightweight adjacent layer fusion module"""
 
-    def __init__(self, c1, c2, c_s, c_l, sample:Literal['bilinear', 'carafe', 'FreqFusion']='bilinear'):
+    def __init__(self, c1, c2, c_s, c_l, sample:Literal['bilinear', 'carafe', 'FreqFusion', 'DySample']='bilinear'):
         super().__init__()
         self.conv1 = Conv(c1, c1)
         self.conv2 = Conv(c_s, c2)
@@ -1627,6 +1628,8 @@ class LowLAF(nn.Module):
             self.us = CARAFE(c_l, 2)
         elif self.sample == 'FreqFusion':
             self.us = FreqFusion(c_l, c1)
+        elif self.sample == 'DySample':
+            self.us = DySample(c_l)
         else:
             raise NotImplementedError
         self.ds = F.adaptive_avg_pool2d
@@ -1636,7 +1639,7 @@ class LowLAF(nn.Module):
 
         if self.sample == 'bilinear':
             x[0] = self.us(x[0], (H, W), mode='bilinear', align_corners=False)
-        elif self.sample == 'carafe':
+        elif self.sample in {'carafe', 'DySample'}:
             x[0] = self.us(x[0])
         elif self.sample == 'FreqFusion':
             x[0], x[1] = self.us(x_l=x[0], x_h=x[1])
@@ -1663,7 +1666,7 @@ class HiLAF(nn.Module):
 class Inject(nn.Module):
     """Information injection module"""
 
-    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion', 'Conv', 'ConvT', 'Same']='bilinear'):
+    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion', 'Conv', 'ConvT', 'Same', 'DySample']='bilinear'):
         super().__init__()
         
         self.index = index
@@ -1686,10 +1689,13 @@ class Inject(nn.Module):
         elif self.sample == 'ConvT':
             self.us1 = ConvTranspose(c2, c2, act=False)
             self.us2 = ConvTranspose(c2, c2, act=False)
+        elif self.sample == 'DySample':
+            self.us1 = DySample(c2)
+            self.us2 = DySample(c2)
 
     def forward(self, x:list[torch.Tensor]):
         x1 = self.conv1(x[0])
-        x2 = x[1][self.index]
+        x2 = x[1] if self.index == -1 else x[1][self.index]
 
         _, _, H, W = x1.shape
         x_ = self.act(self.conv2(x2))
@@ -1701,7 +1707,7 @@ class Inject(nn.Module):
             x2, x_ = self.ds1(x2), self.ds2(x_)
         elif self.sample == 'bilinear':
             x2, x_ = F.interpolate(x2, (H, W), mode='bilinear', align_corners=False), F.interpolate(x_, (H, W), mode='bilinear', align_corners=False)
-        elif self.sample in {'carafe', 'ConvT'}:
+        elif self.sample in {'carafe', 'ConvT', 'DySample'}:
             x2, x_ = self.us1(x2), self.us2(x_)
         elif self.sample == 'FreqFusion':
             x2, x11 = self.us1(x_l=x2, x_h=x1)
@@ -2605,4 +2611,77 @@ class ConvMogaPB(nn.Module):
     def forward(self, x:torch.Tensor)->torch.Tensor:
         x1, x2 = torch.split(self.pwconv1(x), [self.c, self.c], dim=1)
         return self.pwconv2(torch.cat([self.conv(x1), self.moga(x2)], dim=1))
+    
+class ConvMogaSB(nn.Module):
+    def __init__(self, c1, c2, n=1, ffn_r=4, e=0.5, drop=0.):
+        super().__init__()
+        self.c = int(c2 * e)
+        self.conv = C2f(self.c, self.c, n, shortcut=True)
+        self.moga = MogaBlock(self.c, ffn_r, drop)
+        self.pwconv1 = nn.Conv2d(c1, self.c, 1, padding='same')
+        self.pwconv2 = nn.Conv2d(2 * self.c, c2, 1, padding='same')
         
+    def forward(self, x):
+        x1 = self.conv(self.pwconv1(x))
+        x2 = self.moga(x1)
+        return self.pwconv2(torch.cat([x1, x2], dim=1))
+
+class DySample(nn.Module):
+    def __init__(self, c1, s=2, style='lp', g=4, dyscope=True):
+        super().__init__()
+        self.s = s
+        self.style = style
+        self.g = g
+        assert style in ['lp', 'pl']
+        if style == 'pl':
+            assert c1 >= s ** 2 and c1 % s ** 2 == 0
+        assert c1 >= g and c1 % g == 0
+
+        if style == 'pl':
+            c1 = c1 // s ** 2
+            c2 = 2 * g
+        else:
+            c2 = 2 * g * s ** 2
+
+        self.offset = nn.Conv2d(c1, c2, 1)
+        normal_init(self.offset, std=0.001)
+        if dyscope:
+            self.scope = nn.Conv2d(c1, c2, 1, bias=False)
+            constant_init(self.scope, val=0.)
+
+        self.register_buffer('init_pos', self._init_pos())
+
+    def _init_pos(self):
+        h = torch.arange((-self.s + 1) / 2, (self.s - 1) / 2 + 1) / self.s
+        return torch.stack(torch.meshgrid([h, h], indexing='ij')).transpose(1, 2).repeat(1, self.g, 1).reshape(1, -1, 1, 1)
+
+    def sample(self, x, offset):
+        B, _, H, W = offset.shape
+        offset = offset.view(B, 2, -1, H, W)
+        coords_h = torch.arange(H) + 0.5
+        coords_w = torch.arange(W) + 0.5
+        coords = torch.stack(torch.meshgrid([coords_w, coords_h], indexing='ij')).transpose(1, 2).unsqueeze(1).unsqueeze(0).type(x.dtype).to(x.device)
+        normalizer = torch.tensor([W, H], dtype=x.dtype, device=x.device).view(1, 2, 1, 1, 1)
+        coords = 2 * (coords + offset) / normalizer - 1
+        coords = F.pixel_shuffle(coords.view(B, -1, H, W), self.s).view(B, 2, -1, self.s * H, self.s * W).permute(0, 2, 3, 4, 1).contiguous().flatten(0, 1)
+        return F.grid_sample(x.reshape(B * self.g, -1, H, W), coords, mode='bilinear', align_corners=False, padding_mode="border").view(B, -1, self.s * H, self.s * W)
+
+    def forward_lp(self, x):
+        if hasattr(self, 'scope'):
+            offset = self.offset(x) * self.scope(x).sigmoid() * 0.5 + self.init_pos
+        else:
+            offset = self.offset(x) * 0.25 + self.init_pos
+        return self.sample(x, offset)
+
+    def forward_pl(self, x):
+        x_ = F.pixel_shuffle(x, self.s)
+        if hasattr(self, 'scope'):
+            offset = F.pixel_unshuffle(self.offset(x_) * self.scope(x_).sigmoid(), self.s) * 0.5 + self.init_pos
+        else:
+            offset = F.pixel_unshuffle(self.offset(x_), self.s) * 0.25 + self.init_pos
+        return self.sample(x, offset)
+
+    def forward(self, x):
+        if self.style == 'pl':
+            return self.forward_pl(x)
+        return self.forward_lp(x)
