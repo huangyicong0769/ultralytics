@@ -103,6 +103,7 @@ from .block import (
     ConvMogaPB,
     ConvMogaSB,
     DySample,
+    CGAFusion,
 )
 from .conv import (
     CBAM,
@@ -252,4 +253,5 @@ __all__ = (
     "ConvMogaPB",
     "ConvMogaSB",
     "DySample",
+    "CGAFusion",
 )

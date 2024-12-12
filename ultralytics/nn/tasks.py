@@ -110,6 +110,7 @@ from ultralytics.nn.modules import (
     ConvMogaPB,
     ConvMogaSB,
     DySample,
+    CGAFusion,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1176,7 +1177,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             c1 = ch[f[1]] if index == -1 else ch[f[1]][index]
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
-            args = [c1, c2, *args[1:]]
+            args = [c1, c2, index, n, *args[2:]]
+            n = 1
         elif m in {Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect, ARBDetect}:
             args.append([ch[x] for x in f])
             if m is Segment:
@@ -1194,17 +1196,17 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is Split:
             c2 = [(make_divisible(min(arg, max_channels)*width, 8) if arg != nc else arg) for arg in args]
             args = [c2]
-        elif m in {CBAM, LSKblock, Star, MogaBlock, DySample}:
+        elif m in {CARAFE, CBAM, LSKblock, Star, MogaBlock, DySample, RepVGGDW}:
             c2 = ch[f]
             args = [c2, *args]
-        elif m is CARAFE:
-            c1 = ch[f]
-            c2 = c1
-            args = [c1, *args[1:]]
         elif m is FreqFusion:
             c1 = [ch[f[0]], ch[f[1]]]
             c2 = [ch[f[0]], ch[f[0]], ch[f[1]]]
             args = [ch[f[0]], ch[f[1]], *args[2:]]
+        elif m is CGAFusion:
+            assert ch[f[0]] == ch[f[1]]
+            c2 = ch[f[0]]
+            args = [c2, *args]
         else:
             c2 = ch[f]
 

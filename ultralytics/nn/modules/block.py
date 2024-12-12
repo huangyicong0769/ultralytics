@@ -97,6 +97,7 @@ __all__ = (
     "ConvMogaPB",
     "ConvMogaSB",
     "DySample",
+    "CGAFusion",
 )
 
 class DFL(nn.Module):
@@ -1658,7 +1659,7 @@ class HiLAF(nn.Module):
         self.conv = Conv(c1, c2)
         self.ds = F.adaptive_avg_pool2d
 
-    def forward(self, x:list[torch.Tensor]):
+    def forward(self, x:list[torch.Tensor])->torch.Tensor:
         _, _, H, W = x[0].shape
         x[1] = self.ds(x[1], [H, W])
         return self.conv(torch.cat(x, 1))
@@ -1666,7 +1667,7 @@ class HiLAF(nn.Module):
 class Inject(nn.Module):
     """Information injection module"""
 
-    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion', 'Conv', 'ConvT', 'Same', 'DySample']='bilinear'):
+    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion', 'Conv', 'ConvT', 'Same', 'DySample']='Same'):
         super().__init__()
         
         self.index = index
@@ -1715,6 +1716,7 @@ class Inject(nn.Module):
             x1 = self.cv(torch.cat([x11, x12], dim=1))
         else:
             if self.sample != 'Same':
+                print(self.sample)
                 raise NotImplementedError
 
         y = x2 + x1 * x_
@@ -2685,3 +2687,68 @@ class DySample(nn.Module):
         if self.style == 'pl':
             return self.forward_pl(x)
         return self.forward_lp(x)
+
+class CGAFusion(nn.Module):
+    """ingle image dehazing based on detail enhanced convolution and content-guided attention
+    [https://github.com/cecret3350/DEA-Net/tree/main]
+    """
+    class SpatialAttention(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.sa = nn.Conv2d(2, 1, 7, padding=3, padding_mode='reflect', bias=True)
+
+        def forward(self, x):
+            x_avg = torch.mean(x, dim=1, keepdim=True)
+            x_max, _ = torch.max(x, dim=1, keepdim=True)
+            x2 = torch.cat([x_avg, x_max], dim=1)
+            sattn = self.sa(x2)
+            return sattn
+
+    class ChannelAttention(nn.Module):
+        def __init__(self, dim, reduction=8):
+            super().__init__()
+            self.gap = nn.AdaptiveAvgPool2d(1)
+            self.ca = nn.Sequential(
+                nn.Conv2d(dim, dim // reduction, 1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(dim // reduction, dim, 1, bias=True),
+            )
+
+        def forward(self, x):
+            x_gap = self.gap(x)
+            cattn = self.ca(x_gap)
+            return cattn
+
+    class PixelAttention(nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.pa2 = nn.Conv2d(2 * dim, dim, 7, padding=3, padding_mode='reflect', groups=dim, bias=True)
+            self.sigmoid = nn.Sigmoid()
+
+        def forward(self, x, pattn1):
+            B, C, H, W = x.shape
+            x = x.unsqueeze(dim=2)  # B, C, 1, H, W
+            pattn1 = pattn1.unsqueeze(dim=2)  # B, C, 1, H, W
+            x2 = torch.cat([x, pattn1], dim=2).contiguous().view([B, -1, H, W])  # B, C, H, W
+            pattn2 = self.pa2(x2)
+            pattn2 = self.sigmoid(pattn2)
+            return pattn2
+        
+    def __init__(self, dim, reduction=8):
+        super().__init__()
+        self.sa = self.SpatialAttention()
+        self.ca = self.ChannelAttention(dim, reduction)
+        self.pa = self.PixelAttention(dim)
+        self.conv = nn.Conv2d(dim, dim, 1, bias=True)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x:list[torch.Tensor])->torch.Tensor:
+        x, y = x
+        initial = x + y
+        cattn = self.ca(initial)
+        sattn = self.sa(initial)
+        pattn1 = sattn + cattn
+        pattn2 = self.sigmoid(self.pa(initial, pattn1))
+        result = initial + pattn2 * x + (1 - pattn2) * y
+        result = self.conv(result)
+        return result
