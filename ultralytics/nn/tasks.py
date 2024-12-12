@@ -103,6 +103,7 @@ from ultralytics.nn.modules import (
     FMF,
     WTC2f,
     WTConv,
+    WTConv2d,
     WTEEC2f,
     WTCC2f,
     DetailEnhancement,
@@ -111,6 +112,7 @@ from ultralytics.nn.modules import (
     ConvMogaSB,
     DySample,
     CGAFusion,
+    MCAM,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -251,7 +253,7 @@ class BaseModel(nn.Module):
         """
         if not self.is_fused():
             for m in self.model.modules():
-                if isinstance(m, (Conv, Conv2, DWConv)) and hasattr(m, "bn") and not isinstance(m, WTConv):
+                if isinstance(m, (Conv, Conv2, DWConv)) and hasattr(m, "bn") and not isinstance(m, (WTConv, WTConv2d)):
                     if isinstance(m, Conv2):
                         m.fuse_convs()
                     m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
@@ -1068,6 +1070,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C2PSSA,
             C2INXB,
             WTC2f,
+            WTConv2d,
             WTEEC2f,
             WTCC2f,
             ConvMogaPB,
@@ -1203,7 +1206,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             c1 = [ch[f[0]], ch[f[1]]]
             c2 = [ch[f[0]], ch[f[0]], ch[f[1]]]
             args = [ch[f[0]], ch[f[1]], *args[2:]]
-        elif m is CGAFusion:
+        elif m in {CGAFusion, MCAM}:
             assert ch[f[0]] == ch[f[1]]
             c2 = ch[f[0]]
             args = [c2, *args]

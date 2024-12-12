@@ -104,6 +104,7 @@ from .block import (
     ConvMogaSB,
     DySample,
     CGAFusion,
+    MCAM,
 )
 from .conv import (
     CBAM,
@@ -120,6 +121,7 @@ from .conv import (
     RepConv,
     SpatialAttention,
     WTConv,
+    WTConv2d,
 )
 from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, ARBDetect
 from .transformer import (
@@ -248,10 +250,12 @@ __all__ = (
     "WTC2f",
     "WTEEC2f",
     "WTCC2f",
+    "WTConv2d",
     "DetailEnhancement",
     "MogaBlock",
     "ConvMogaPB",
     "ConvMogaSB",
     "DySample",
     "CGAFusion",
+    "MCAM",
 )
