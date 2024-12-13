@@ -335,6 +335,19 @@ class Concat(nn.Module):
         """Forward pass for the YOLOv8 mask Proto module."""
         return torch.cat(x, self.d)
 
+class InceptionDWConv2d(nn.Module):
+    def __init__(self, c, k1=3, k2=11, r=0.15):
+        super().__init__()
+        c_ = int(c*r)
+        self.conv1 = DWConv(c_, c_, k1)
+        self.conv2 = DWConv(c_, c_, (1, k2))
+        self.conv3 = DWConv(c_, c_, (k2, 1))
+        self.split_index = (c - 3*c_, c_, c_, c_)
+    
+    def forward(self, x):
+        x0, x1, x2, x3 = torch.split(x, self.split_index, dim=1)
+        return torch.cat([x0, self.conv1(x1), self.conv2(x2), self.conv3(x3)], dim=1)
+
 class WTConv2d(nn.Module):
     """Wavelet Convolutions for Large Receptive Fields
     https://github.com/BGU-CS-VIL/WTConv

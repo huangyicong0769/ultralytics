@@ -105,6 +105,7 @@ from .block import (
     DySample,
     CGAFusion,
     MCAM,
+    EUCB,
 )
 from .conv import (
     CBAM,
@@ -258,4 +259,5 @@ __all__ = (
     "DySample",
     "CGAFusion",
     "MCAM",
+    "EUCB",
 )

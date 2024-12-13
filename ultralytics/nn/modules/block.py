@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose, InceptionDWConv2d
 from .transformer import TransformerBlock, MLPBlock, LayerNorm2d, MLP, DropPath
 from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe, spatial_selective
 
@@ -99,6 +99,7 @@ __all__ = (
     "DySample",
     "CGAFusion",
     "MCAM",
+    "EUCB",
 )
 
 class DFL(nn.Module):
@@ -1668,7 +1669,7 @@ class HiLAF(nn.Module):
 class Inject(nn.Module):
     """Information injection module"""
 
-    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion', 'Conv', 'ConvT', 'Same', 'DySample']='Same'):
+    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion', 'Conv', 'ConvT', 'Same', 'DySample', 'EUCB']='Same'):
         super().__init__()
         
         self.index = index
@@ -1694,6 +1695,9 @@ class Inject(nn.Module):
         elif self.sample == 'DySample':
             self.us1 = DySample(c2)
             self.us2 = DySample(c2)
+        elif self.sample == 'EUCB':
+            self.us1 = EUCB(c2, c2)
+            self.us2 = EUCB(c2, c2)
 
     def forward(self, x:list[torch.Tensor]):
         x1 = self.conv1(x[0])
@@ -1709,7 +1713,7 @@ class Inject(nn.Module):
             x2, x_ = self.ds1(x2), self.ds2(x_)
         elif self.sample == 'bilinear':
             x2, x_ = F.interpolate(x2, (H, W), mode='bilinear', align_corners=False), F.interpolate(x_, (H, W), mode='bilinear', align_corners=False)
-        elif self.sample in {'carafe', 'ConvT', 'DySample'}:
+        elif self.sample in {'carafe', 'ConvT', 'DySample', 'EUCB'}:
             x2, x_ = self.us1(x2), self.us2(x_)
         elif self.sample == 'FreqFusion':
             x2, x11 = self.us1(x_l=x2, x_h=x1)
@@ -2009,28 +2013,14 @@ class ConvMLP(nn.Module):
         self.fc2 = nn.Conv2d(c_, c2, 1, bias=bias[1])
 
     def forward(self, x):
-        return self.fc2(self.drop(self.act(self.norm(self.fc1(x)))))
-        
-
-class tokenMixer(nn.Module):
-    def __init__(self, c, k1=3, k2=11, r=0.15):
-        super().__init__()
-        c_ = int(c*r)
-        self.conv1 = DWConv(c_, c_, k1)
-        self.conv2 = DWConv(c_, c_, (1, k2))
-        self.conv3 = DWConv(c_, c_, (k2, 1))
-        self.split_index = (c - 3*c_, c_, c_, c_)
-    
-    def forward(self, x):
-        x0, x1, x2, x3 = torch.split(x, self.split_index, dim=1)
-        return torch.cat([x0, self.conv1(x1), self.conv2(x2), self.conv3(x3)], dim=1)
+        return self.fc2(self.drop(self.act(self.norm(self.fc1(x)))))  
 
 class InceptionNeXtBlock(nn.Module):
     '''http://arxiv.org/abs/2303.16900'''
 
     def __init__(self, c, mlp_r=4, shortcut=True, ls_init_value=1e-6):
         super().__init__()
-        self.tokenMixer = tokenMixer(c)
+        self.tokenMixer = InceptionDWConv2d(c)
         self.norm = nn.BatchNorm2d(c)
         self.feedback = ConvMLP(c, int(mlp_r*c))
         self.shortcut = shortcut
@@ -2871,3 +2861,38 @@ class MCAM(nn.Module):
         y = y.view(batch_size, self.inter_channels, *sar.size()[2:])
         y = self.W(y)
         return y
+
+class EUCB(nn.Module):
+#   Efficient up-convolution block (EUCB)
+    def __init__(self, c1, c2, k=3, s=1, act=nn.ReLU(inplace=True)):
+        super(EUCB, self).__init__()
+
+        self.in_channels = c1
+        self.out_channels = c2
+        self.up_dwc = nn.Sequential(
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(self.in_channels, self.in_channels, kernel_size=k, stride=s,
+                      padding=k // 2, groups=self.in_channels, bias=False),
+            nn.BatchNorm2d(self.in_channels),
+            act
+        )
+        self.pwc = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, kernel_size=1, stride=1, padding=0, bias=True)
+        )
+
+    def forward(self, x):
+        x = self.up_dwc(x)
+        x = self.channel_shuffle(x, self.in_channels)
+        x = self.pwc(x)
+        return x
+    
+    def channel_shuffle(self, x, groups):
+        batchsize, num_channels, height, width = x.data.size()
+        channels_per_group = num_channels // groups
+        # reshape
+        x = x.view(batchsize, groups,
+                   channels_per_group, height, width)
+        x = torch.transpose(x, 1, 2).contiguous()
+        # flatten
+        x = x.view(batchsize, -1, height, width)
+        return x
