@@ -114,6 +114,8 @@ from ultralytics.nn.modules import (
     CGAFusion,
     MCAM,
     EUCB,
+    DFF,
+    CAFF,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1201,14 +1203,14 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is Split:
             c2 = [(make_divisible(min(arg, max_channels)*width, 8) if arg != nc else arg) for arg in args]
             args = [c2]
-        elif m in {CARAFE, CBAM, LSKblock, Star, MogaBlock, DySample, RepVGGDW}:
+        elif m in {MCA, CARAFE, CBAM, LSKblock, Star, MogaBlock, DySample, RepVGGDW}:
             c2 = ch[f]
             args = [c2, *args]
         elif m is FreqFusion:
             c1 = [ch[f[0]], ch[f[1]]]
             c2 = [ch[f[0]], ch[f[0]], ch[f[1]]]
             args = [ch[f[0]], ch[f[1]], *args[2:]]
-        elif m in {CGAFusion, MCAM}:
+        elif m in {CGAFusion, MCAM, DFF, CAFF}:
             assert ch[f[0]] == ch[f[1]]
             c2 = ch[f[0]]
             args = [c2, *args]
