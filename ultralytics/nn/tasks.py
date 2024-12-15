@@ -117,6 +117,7 @@ from ultralytics.nn.modules import (
     DFF,
     CAFF,
     EFF,
+    CAFM,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1207,7 +1208,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m in {MCA, CARAFE, CBAM, LSKblock, Star, MogaBlock, DySample, RepVGGDW}:
             c2 = ch[f]
             args = [c2, *args]
-        elif m in {CGAFusion, MCAM, DFF, CAFF, EFF}:
+        elif m in {CGAFusion, MCAM, DFF, CAFF, EFF, CAFM}:
             assert ch[f[0]] == ch[f[1]]
             c2 = ch[f[0]]
             args = [c2, *args]

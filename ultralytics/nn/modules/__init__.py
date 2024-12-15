@@ -109,6 +109,7 @@ from .block import (
     DFF,
     CAFF,
     EFF,
+    CAFM,
 )
 from .conv import (
     CBAM,
@@ -264,6 +265,7 @@ __all__ = (
     "MCAM",
     "EUCB",
     "DFF",
-    "CAFF"
+    "CAFF",
     "EFF",
+    "CAFM",
 )
