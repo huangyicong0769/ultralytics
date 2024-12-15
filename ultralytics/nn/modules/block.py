@@ -7,11 +7,11 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose, InceptionDWConv2d
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose, InceptionDWConv2d, SpatialAttention
 from .transformer import TransformerBlock, MLPBlock, LayerNorm2d, MLP, DropPath
 from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe, spatial_selective
 
-from math import log2
+from math import log2, log
 from typing import Literal
 
 __all__ = (
@@ -101,7 +101,8 @@ __all__ = (
     "MCAM",
     "EUCB",
     "DFF",
-    "CAFF"
+    "CAFF",
+    "EFF",
 )
 
 class DFL(nn.Module):
@@ -2933,3 +2934,90 @@ class CAFF(DFF):
     def __init__(self, dim):
         super().__init__(dim)
         self.conv_atten = MCA(dim)
+
+class EFF(nn.Module):
+    class Efficient_Attention_Gate(nn.Module):
+        def __init__(self, F_g, F_l, F_int, num_groups=32):
+            super().__init__()
+            self.num_groups = num_groups
+            self.grouped_conv_g = nn.Sequential(
+                nn.Conv2d(F_g, F_int, kernel_size=1, stride=1, padding=0, bias=True, groups=num_groups),
+                nn.BatchNorm2d(F_int),
+                nn.ReLU(inplace=True)
+            )
+
+            self.grouped_conv_x = nn.Sequential(
+                nn.Conv2d(F_l, F_int, kernel_size=1, stride=1, padding=0, bias=True, groups=num_groups),
+                nn.BatchNorm2d(F_int),
+                nn.ReLU(inplace=True)
+            )
+            self.psi = nn.Sequential(
+                nn.Conv2d(F_int, 1, kernel_size=1, stride=1, padding=0, bias=True),
+                nn.BatchNorm2d(1),
+                nn.Sigmoid()
+            )
+
+            self.relu = nn.ReLU(inplace=True)
+
+        def forward(self, g, x):
+            g1 = self.grouped_conv_g(g)
+            x1 = self.grouped_conv_x(x)
+            psi = self.psi(self.relu(x1 + g1))
+            out = x * psi
+            out += x
+
+            return out
+
+    class EfficientChannelAttention(nn.Module):
+        def __init__(self, channels, gamma=2, b=1):
+            super().__init__()
+
+            # 设计自适应卷积核，便于后续做1*1卷积
+            kernel_size = int(abs((log(channels, 2) + b) / gamma))
+            kernel_size = kernel_size if kernel_size % 2 else kernel_size + 1
+
+            # 全局平局池化
+            self.avg_pool = nn.AdaptiveAvgPool2d(1)
+
+            # 基于1*1卷积学习通道之间的信息
+            self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False)
+
+            # 激活函数
+            self.sigmoid = nn.Sigmoid()
+
+        def forward(self, x):
+            # 首先，空间维度做全局平局池化，[b,c,h,w]==>[b,c,1,1]
+            v = self.avg_pool(x)
+
+            # 然后，基于1*1卷积学习通道之间的信息；其中，使用前面设计的自适应卷积核
+            v = self.conv(v.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+
+            # 最终，经过sigmoid 激活函数处理
+            v = self.sigmoid(v)
+            return v
+
+    def __init__(self, in_dim, is_bottom=False):
+        super().__init__()
+        self.is_bottom = is_bottom
+        if not is_bottom:
+            self.EAG = self.Efficient_Attention_Gate(in_dim, in_dim, in_dim)
+        else:
+            self.EAG = nn.Identity()
+        self.ECA = self.EfficientChannelAttention(in_dim*2)
+        self.SA = SpatialAttention()
+        self.conv = DWConv(2 * in_dim, in_dim)
+
+    def forward(self, x):
+        x, skip = x
+        # print(f"pre:{x.shape}, {skip.shape}")
+        if not self.is_bottom:
+            EAG_skip = self.EAG(x, skip)
+            x = torch.cat((EAG_skip, x), dim=1)
+            # x = EAG_skip + x
+        else:
+            x = self.EAG(x)
+        x = self.ECA(x) * x
+        x = self.SA(x) * x
+        x = self.conv(x)
+        # print(f"aft:{x.shape}")
+        return x
