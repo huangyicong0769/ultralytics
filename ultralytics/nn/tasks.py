@@ -118,6 +118,8 @@ from ultralytics.nn.modules import (
     CAFF,
     EFF,
     CAFM,
+    CAInject,
+    SAFMNPP,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1181,7 +1183,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             if c2 != nc:
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
             args = [sum(ch[x] for x in f), c2]
-        elif m is Inject:
+        elif m in {Inject, CAInject}:
             c2, index = args[0], args[1]
             c1 = ch[f[1]] if index == -1 else ch[f[1]][index]
             if c2 != nc:
@@ -1205,7 +1207,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         elif m is Split:
             c2 = [(make_divisible(min(arg, max_channels)*width, 8) if arg != nc else arg) for arg in args]
             args = [c2]
-        elif m in {MCA, CARAFE, CBAM, LSKblock, Star, MogaBlock, DySample, RepVGGDW}:
+        elif m in {MCA, CARAFE, CBAM, LSKblock, Star, MogaBlock, DySample, RepVGGDW, SAFMNPP}:
             c2 = ch[f]
             args = [c2, *args]
         elif m in {CGAFusion, MCAM, DFF, CAFF, EFF, CAFM}:

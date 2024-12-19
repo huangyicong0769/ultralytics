@@ -110,6 +110,8 @@ from .block import (
     CAFF,
     EFF,
     CAFM,
+    CAInject,
+    SAFMNPP,
 )
 from .conv import (
     CBAM,
@@ -268,4 +270,6 @@ __all__ = (
     "CAFF",
     "EFF",
     "CAFM",
+    "CAInject",
+    "SAFMNPP",
 )

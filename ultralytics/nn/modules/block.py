@@ -104,6 +104,8 @@ __all__ = (
     "CAFF",
     "EFF",
     "CAFM",
+    "CAInject",
+    "SAFMNPP",
 )
 
 class DFL(nn.Module):
@@ -1673,7 +1675,7 @@ class HiLAF(nn.Module):
 class Inject(nn.Module):
     """Information injection module"""
 
-    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion', 'Conv', 'ConvT', 'Same', 'DySample', 'EUCB']='Same'):
+    def __init__(self, c1, c2, index, n=1, sample:Literal['avgpool', 'bilinear', 'carafe', 'FreqFusion', 'Conv', 'ConvT', 'Same', 'DySample', 'EUCB', 'SAFMNPP']='Same'):
         super().__init__()
         
         self.index = index
@@ -1702,22 +1704,31 @@ class Inject(nn.Module):
         elif self.sample == 'EUCB':
             self.us1 = EUCB(c2, c2)
             self.us2 = EUCB(c2, c2)
+        elif self.sample == 'SAFMNPP':
+            self.us1 = SAFMNPP(c2, c2)
+            self.us2 = SAFMNPP(c2, c2)
 
     def forward(self, x:list[torch.Tensor]):
         x1 = self.conv1(x[0])
         x2 = x[1] if self.index == -1 else x[1][self.index]
-
-        _, _, H, W = x1.shape
+        
         x_ = self.act(self.conv2(x2))
         x2 = self.conv3(x2)
 
+        x1, x2, x_ = self.alian(x1, x2, x_)
+
+        y = x2 + x1 * x_
+        return self.conv4(y)
+
+    def alian(self, x1, x2, x_):
+        _, _, H, W = x1.shape
         if self.sample == 'avgpool':
             x2, x_ = F.adaptive_avg_pool2d(x2, [H, W]), F.adaptive_avg_pool2d(x_, [H, W])
         elif self.sample == 'Conv':
             x2, x_ = self.ds1(x2), self.ds2(x_)
         elif self.sample == 'bilinear':
             x2, x_ = F.interpolate(x2, (H, W), mode='bilinear', align_corners=False), F.interpolate(x_, (H, W), mode='bilinear', align_corners=False)
-        elif self.sample in {'carafe', 'ConvT', 'DySample', 'EUCB'}:
+        elif self.sample in {'carafe', 'ConvT', 'DySample', 'EUCB', 'SAFMNPP'}:
             x2, x_ = self.us1(x2), self.us2(x_)
         elif self.sample == 'FreqFusion':
             x2, x11 = self.us1(x_l=x2, x_h=x1)
@@ -1727,9 +1738,7 @@ class Inject(nn.Module):
             if self.sample != 'Same':
                 print(self.sample)
                 raise NotImplementedError
-
-        y = x2 + x1 * x_
-        return self.conv4(y)
+        return x1,x2,x_
 
 class CARAFE(nn.Module):
     '''Content-Aware ReAssembly of FEatures'''
@@ -3048,10 +3057,15 @@ class CAFM(nn.Module):
         self.max11 = nn.Conv2d(c_, c, 1, stride=1, padding=0)
         self.max22 = nn.Conv2d(c_, c, 1, stride=1, padding=0)
 
+        self.cv = Conv(2*c, c)
+
     def forward(self, x:torch.Tensor)->torch.Tensor:
         f1, f2 = x
-        b, c, h, w = f1.size()
+        f1, f2 = self._forward(f1, f2)
+        return f1 + f2
 
+    def _forward(self, f1, f2):
+        b, c, h, w = f1.shape
         f1 = f1.reshape([b, c, -1])
         f2 = f2.reshape([b, c, -1])
 
@@ -3100,5 +3114,91 @@ class CAFM(nn.Module):
 
         f1 = f1 * a1 + f1
         f2 = f2 * a2 + f2
+        return f1.view([b, c, h, w]), f2.view([b, c, h, w])
+    
+class CAInject(Inject):
+    def __init__(self, c1, c2, index, n=1, sample = 'Same'):
+        super().__init__(c1, c2, index, n, sample)
+        self.ca = CAFM(c2)
+        
+    def forward(self, x):
+        x1 = x[0]
+        x2 = x[1] if self.index == -1 else x[1][self.index]
+        
+        x1, x2, _ = self.alian(x1, x2, x2)
+        x1, x2 = self.ca._forward(x1, x2)
+        
+        return self.conv4(x1 * self.act(x2))
 
-        return (f1 + f2).view([b, c, h, w])
+class SAFMNPP(nn.Module):
+    """[https://github.com/sunny2109/SAFMN/blob/main/NTIRE2024_ESR/models/team23_safmnpp.py]"""
+    class SimpleSAFM(nn.Module):
+        def __init__(self, dim, ratio=4):
+            super().__init__()
+            self.dim = dim
+            self.chunk_dim = dim // ratio
+
+            self.proj = nn.Conv2d(dim, dim, 3, 1, 1, bias=False)
+            self.dwconv = nn.Conv2d(self.chunk_dim, self.chunk_dim, 3, 1, 1, groups=self.chunk_dim, bias=False)
+            self.out = nn.Conv2d(dim, dim, 1, 1, 0, bias=False)
+            self.act = nn.GELU()
+
+        def forward(self, x):
+            h, w = x.size()[-2:]
+
+            x0, x1 = self.proj(x).split([self.chunk_dim, self.dim-self.chunk_dim], dim=1)
+
+            x2 = F.adaptive_max_pool2d(x0, (h//8, w//8))
+            x2 = self.dwconv(x2)
+            x2 = F.interpolate(x2, size=(h, w), mode='bilinear')
+            x2 = self.act(x2) * x0
+
+            x = torch.cat([x1, x2], dim=1)
+            x = self.out(self.act(x))
+            return x
+    
+    # Convolutional Channel Mixer
+    class CCM(nn.Module):
+        def __init__(self, dim, ffn_scale, use_se=False):
+            super().__init__()
+            self.use_se = use_se
+            hidden_dim = int(dim*ffn_scale)
+
+            self.conv1 = nn.Conv2d(dim, hidden_dim, 3, 1, 1, bias=False)
+            self.conv2 = nn.Conv2d(hidden_dim, dim, 1, 1, 0, bias=False)
+            self.act = nn.GELU()
+
+        def forward(self, x):
+            x = self.act(self.conv1(x))
+            x = self.conv2(x)
+            return x
+
+    class AttBlock(nn.Module):
+        def __init__(self, dim, ffn_scale, use_se=False):
+            super().__init__()
+
+            self.conv1 = SAFMNPP.SimpleSAFM(dim, ratio=3)
+            self.conv2 = SAFMNPP.CCM(dim, ffn_scale, use_se)
+
+        def forward(self, x):
+            out = self.conv1(x)
+            out = self.conv2(out)
+            return out + x
+
+    def __init__(self, c1, dim, n_blocks=1, ffn_scale=2.0, use_se=False, upscaling_factor=2):
+        super().__init__()
+        self.scale = upscaling_factor
+
+        self.to_feat = nn.Conv2d(c1, dim, 3, 1, 1, bias=False)
+
+        self.feats = nn.Sequential(*[self.AttBlock(dim, ffn_scale, use_se) for _ in range(n_blocks)])
+
+        self.to_img = nn.Sequential(
+            nn.Conv2d(dim, c1 * upscaling_factor**2, 3, 1, 1, bias=False),
+            nn.PixelShuffle(upscaling_factor)
+        )
+        
+    def forward(self, x):
+        x = self.to_feat(x)
+        x = self.feats(x) + x
+        return self.to_img(x)
