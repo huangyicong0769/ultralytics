@@ -29,6 +29,7 @@ class DetectionPredictor(BasePredictor):
             agnostic=self.args.agnostic_nms,
             max_det=self.args.max_det,
             classes=self.args.classes,
+            soft=self.args.soft_nms,
         )
 
         if not isinstance(orig_imgs, list):  # input images are a torch.Tensor, not a list

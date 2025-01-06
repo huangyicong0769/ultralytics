@@ -38,6 +38,7 @@ class OBBPredictor(DetectionPredictor):
             nc=len(self.model.names),
             classes=self.args.classes,
             rotated=True,
+            soft=self.args.soft_nms,
         )
 
         if not isinstance(orig_imgs, list):  # input images are a torch.Tensor, not a list

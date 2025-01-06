@@ -48,6 +48,7 @@ class OBBValidator(DetectionValidator):
             agnostic=self.args.single_cls or self.args.agnostic_nms,
             max_det=self.args.max_det,
             rotated=True,
+            soft=self.args.soft_nms,
         )
 
     def _process_batch(self, detections, gt_bboxes, gt_cls):

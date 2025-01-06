@@ -104,6 +104,8 @@ class BboxLoss(nn.Module):
         match self.iou_type:
             case 'CIoU':
                 iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+            case 'DIoU':
+                iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, DIoU=True)
             case 'MPDIoU':
                 iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, MPDIoU=True)
             case 'WIoUv1':

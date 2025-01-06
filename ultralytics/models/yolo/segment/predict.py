@@ -35,6 +35,7 @@ class SegmentationPredictor(DetectionPredictor):
             max_det=self.args.max_det,
             nc=len(self.model.names),
             classes=self.args.classes,
+            soft=self.args.soft_nms,
         )
 
         if not isinstance(orig_imgs, list):  # input images are a torch.Tensor, not a list

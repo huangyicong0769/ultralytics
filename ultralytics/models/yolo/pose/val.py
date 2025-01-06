@@ -72,6 +72,7 @@ class PoseValidator(DetectionValidator):
             agnostic=self.args.single_cls or self.args.agnostic_nms,
             max_det=self.args.max_det,
             nc=self.nc,
+            soft=self.args.soft_nms,
         )
 
     def init_metrics(self, model):

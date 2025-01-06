@@ -384,6 +384,7 @@ class Predictor(BasePredictor):
             crop_bboxes = torch.cat(crop_bboxes)
             crop_scores = torch.cat(crop_scores)
             keep = torchvision.ops.nms(crop_bboxes, crop_scores, self.args.iou)  # NMS
+            
             crop_bboxes = uncrop_boxes_xyxy(crop_bboxes[keep], crop_region)
             crop_masks = uncrop_masks(crop_masks[keep], crop_region, ih, iw)
             crop_scores = crop_scores[keep]
@@ -402,6 +403,7 @@ class Predictor(BasePredictor):
         if len(crop_regions) > 1:
             scores = 1 / region_areas
             keep = torchvision.ops.nms(pred_bboxes, scores, crop_nms_thresh)
+            
             pred_masks, pred_bboxes, pred_scores = pred_masks[keep], pred_bboxes[keep], pred_scores[keep]
 
         return pred_masks, pred_scores, pred_bboxes
@@ -616,6 +618,7 @@ class Predictor(BasePredictor):
         new_masks = torch.cat(new_masks, dim=0)
         boxes = batched_mask_to_box(new_masks)
         keep = torchvision.ops.nms(boxes.float(), torch.as_tensor(scores), nms_thresh)
+        
 
         return new_masks[keep].to(device=masks.device, dtype=masks.dtype), keep
 

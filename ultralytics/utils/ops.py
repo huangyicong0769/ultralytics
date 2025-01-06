@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from ultralytics.utils import LOGGER
-from ultralytics.utils.metrics import batch_probiou
+from ultralytics.utils.metrics import batch_probiou, bbox_iou
 
 
 class Profile(contextlib.ContextDecorator):
@@ -174,6 +174,7 @@ def non_max_suppression(
     max_wh=7680,
     in_place=True,
     rotated=False,
+    soft=False,
 ):
     """
     Perform non-maximum suppression (NMS) on a set of boxes, with support for masks and multiple labels per box.
@@ -221,6 +222,8 @@ def non_max_suppression(
         if classes is not None:
             output = [pred[(pred[:, 5:6] == classes).any(1)] for pred in output]
         return output
+
+    cal_nms = torchvision.ops.nms if not soft else soft_nms
 
     bs = prediction.shape[0]  # batch size (BCN, i.e. 1,84,6300)
     nc = nc or (prediction.shape[1] - 4)  # number of classes
@@ -288,7 +291,8 @@ def non_max_suppression(
             i = nms_rotated(boxes, scores, iou_thres)
         else:
             boxes = x[:, :4] + c  # boxes (offset by class)
-            i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
+            i = cal_nms(boxes, scores, iou_thres)  # NMS
+            
         i = i[:max_det]  # limit detections
 
         # # Experimental
@@ -309,6 +313,37 @@ def non_max_suppression(
             break  # time limit exceeded
 
     return output
+
+def soft_nms(bboxes, scores, iou_thresh=0.5, sigma=0.5, score_threshold=0.25):
+    order = torch.arange(0, scores.size(0)).to(bboxes.device)
+    keep = []
+    
+    while order.numel() > 1:
+        if order.numel() == 1:
+            keep.append(order[0])
+            break
+        else:
+            i = order[0]
+            keep.append(i)
+        
+        iou = bbox_iou(bboxes[i], bboxes[order[1:]]).squeeze()
+        
+        idx = (iou > iou_thresh).nonzero().squeeze()
+        if idx.numel() > 0: 
+            iou = iou[idx] 
+            newScores = torch.exp(-torch.pow(iou,2)/sigma)
+            scores[order[idx+1]] *= newScores
+        
+        newOrder = (scores[order[1:]] > score_threshold).nonzero().squeeze() 
+        if newOrder.numel() == 0: 
+            break
+        else:
+            maxScoreIndex = torch.argmax(scores[order[newOrder+1]]) 
+            if maxScoreIndex != 0: 
+                newOrder[[0,maxScoreIndex],] = newOrder[[maxScoreIndex,0],]
+            order = order[newOrder+1]
+    
+    return torch.LongTensor(keep)
 
 
 def clip_boxes(boxes, shape):
