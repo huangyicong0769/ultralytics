@@ -1960,7 +1960,7 @@ class MCAGate(nn.Module):
             if pool_type == 'avg':
                 self.pools.append(nn.AdaptiveAvgPool2d(1))
             elif pool_type == 'max':
-                self.pools.append(nn.AdaptiveAvgPool2d(1))
+                self.pools.append(nn.AdaptiveMaxPool2d(1))
             elif pool_type == 'std':
                 self.pools.append(StdPool())
             else:
@@ -2019,16 +2019,18 @@ class LSKMCAGate(MCAGate):
         
 
 class MCA(nn.Module):
-    def __init__(self, c1, no_spatial=False):
+    def __init__(self, c1, res=False, no_spatial=False):
         """Constructs a MCA module.
         Args:
             c1: Number of channels of the input feature maps
+            res: Whether to use residual connection
             no_spatial: whether to build channel dimension interactions
         """
         super().__init__()
 
         self.h_cw = MCAGate()
         self.w_hc = MCAGate()
+        self.res = res
         self.no_spatial = no_spatial
 
         if not no_spatial:
@@ -2056,9 +2058,9 @@ class MCA(nn.Module):
 
     def forward(self, x):
         if not self.no_spatial:
-            return 1/3*sum(self.transplit(x))
+            return x + 1/3*sum(self.transplit(x)) if self.res else 1/3*sum(self.transplit(x))
         else:
-            return 1/2*sum(self.transplit(x))
+            return x + 1/2*sum(self.transplit(x)) if self.res else 1/2*sum(self.transplit(x))
 
 class MCWA(MCA):
     def __init__(self, c1, no_spatial=False):

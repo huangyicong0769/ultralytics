@@ -829,3 +829,31 @@ class WTConv(Conv):
     def __init__(self, c1, c2, k=1, s=1, bias=True, wt_levels=1, wt_type='db1', act=True):
         super().__init__(c1, c2, k, s, None, 1, 1, act)
         self.conv = WTConv2d(c1, c2, k, s, bias, wt_levels, wt_type)
+
+class PConv(nn.Module):
+    '''Partial Convolution module.[https://github.com/JierunChen/FasterNet/blob/master/models/fasternet.py]
+    '''
+
+    def __init__(self, c, n, forward='split_cat', k=3, s=1):
+        super().__init__()
+        self.c1 = c // n
+        self.c2 = c - self.c1
+        self.conv = Conv(self.c1, self.c1, k, s)
+
+        if forward == 'slicing':
+            self.forward = self._forward_slicing
+        elif forward == 'split_cat':
+            self.forward = self._forward_split_cat
+        else:
+            raise NotImplementedError
+        
+    def _forward_slicing(self, x):
+        # only for inference
+        x = x.clone() # for residual
+        x[:,:self.c1,:,:] = self.conv(x[:,:self.c1,:,:])
+        return x
+
+    def _forward_split_cat(self, x):
+        x1, x2 = torch.split(x, [self.c1, self.c2], dim=1)
+        x1 = self.conv(x1)
+        return torch.cat((x1, x2), 1)
