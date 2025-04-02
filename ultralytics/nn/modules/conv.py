@@ -834,7 +834,7 @@ class PConv(nn.Module):
     '''Partial Convolution module.[https://github.com/JierunChen/FasterNet/blob/master/models/fasternet.py]
     '''
 
-    def __init__(self, c, n, forward='split_cat', k=3, s=1):
+    def __init__(self, c, k=3, s=1, n=4, forward='split_cat'):
         super().__init__()
         self.c1 = c // n
         self.c2 = c - self.c1
@@ -855,5 +855,4 @@ class PConv(nn.Module):
 
     def _forward_split_cat(self, x):
         x1, x2 = torch.split(x, [self.c1, self.c2], dim=1)
-        x1 = self.conv(x1)
-        return torch.cat((x1, x2), 1)
+        return torch.cat((self.conv(x1), x2), 1)

@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose, InceptionDWConv2d, SpatialAttention
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose, InceptionDWConv2d, SpatialAttention, PConv
 from .transformer import TransformerBlock, MLPBlock, LayerNorm2d, MLP, DropPath
 from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe, spatial_selective
 
@@ -110,6 +110,7 @@ __all__ = (
     "SAFMNPP",
     "SCAM",
     "AFE",
+    "C2f_p",
 )
 
 class DFL(nn.Module):
@@ -525,9 +526,9 @@ class Bottleneck(nn.Module):
             e (float): Expansion ratio.
         """
         super().__init__()
-        c_ = int(c2 * e)  # hidden channels
-        self.cv1 = Conv(c1, c_, k[0], 1)
-        self.cv2 = Conv(c_, c2, k[1], 1, g=g)
+        self.c_ = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, self.c_, k[0], 1)
+        self.cv2 = Conv(self.c_, c2, k[1], 1, g=g)
         self.add = shortcut and c1 == c2
 
     def forward(self, x):
@@ -4113,3 +4114,15 @@ class AFE(nn.Module):
         x = self.act(self.proj2(torch.cat([ctx, enh_x], dim=1)))  # 合并上下文和细化特征
 
         return x
+
+class Bottleneck_p(Bottleneck):
+    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=1):
+        super().__init__(c1, c2, shortcut, g, k, e)
+        assert c1 == c2
+        self.cv1 = PConv(c1, k[0], 1)
+        self.cv2 = PConv(c2, k[1], 1)
+
+class C2f_p(C2f):
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
+        super().__init__(c1, c2, n, shortcut, g, e)
+        self.m = nn.ModuleList(Bottleneck_p(self.c, self.c, shortcut, g, k=((3, 3), (3, 3))) for _ in range(n))

@@ -116,6 +116,7 @@ from .block import (
     SCAM,
     AFE,
     TorchVision,
+    C2f_p,
 )
 from .conv import (
     CBAM,
@@ -134,6 +135,7 @@ from .conv import (
     SpatialAttention,
     WTConv,
     WTConv2d,
+    PConv,
 )
 from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, ARBDetect
 from .transformer import (
@@ -282,4 +284,6 @@ __all__ = (
     "TorchVision",
     "Index",
     "A2C2f",
+    "PConv",
+    "C2f_p",
 )
