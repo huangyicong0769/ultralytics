@@ -111,6 +111,8 @@ __all__ = (
     "SCAM",
     "AFE",
     "C2f_p",
+    "EffC2",
+    "EffC2f",
 )
 
 class DFL(nn.Module):
@@ -2135,7 +2137,6 @@ class BottleneckAttn(Bottleneck):
             self.attn = attn(c2)
 
     def forward(self, x):
-        """Applies the YOLO FPN to input data."""
         y = self.cv2(self.cv1(x))
         y = self.attn(y)
         return x + y if self.add else y
@@ -4115,14 +4116,37 @@ class AFE(nn.Module):
 
         return x
 
-class Bottleneck_p(Bottleneck):
-    def __init__(self, c1, c2, shortcut=True, g=1, k=(3, 3), e=1):
-        super().__init__(c1, c2, shortcut, g, k, e)
+class Bottleneck_p(BottleneckAttn):
+    def __init__(self, c1, c2, attn=nn.Identity, shortcut=True, e=0.25):
+        super().__init__(c1, c2, attn, shortcut, 1, (3, 3), e)
         assert c1 == c2
-        self.cv1 = PConv(c1, k[0], 1)
-        self.cv2 = PConv(c2, k[1], 1)
+        self.cv1 = PConv(c1, n=int(1/e))
+        self.cv2 = PConv(c2, n=int(1/e))
 
 class C2f_p(C2f):
     def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
         super().__init__(c1, c2, n, shortcut, g, e)
-        self.m = nn.ModuleList(Bottleneck_p(self.c, self.c, shortcut, g, k=((3, 3), (3, 3))) for _ in range(n))
+        self.m = nn.ModuleList(Bottleneck_p(self.c, self.c, shortcut=shortcut, e=1) for _ in range(n))
+
+class EffC2(nn.Module):
+    def __init__(self, c1, c2, n=1, shortcut=False, e=0.25):
+        super().__init__()
+        assert c1 == c2
+        self.shortcut = shortcut
+
+        self.m = nn.Sequential(*(Bottleneck_p(c1, c1, MCA, shortcut=shortcut, e=e) for _ in range(n)))
+        self.cv = Conv(c1, c1, 1)
+
+    def forward(self, x):
+        return x + self.cv(self.m(x)) if self.shortcut else self.cv(self.m(x))
+    
+class EffC2f(EffC2):
+    def __init__(self, c1, c2, n=1, shortcut=False, e=0.25):
+        super().__init__(c1, c2, n, shortcut, e)
+        self.m = nn.ModuleList(Bottleneck_p(c1, c1, MCA, shortcut=shortcut, e=e) for _ in range(n))
+        self.cv = Conv((n + 1)*c1, c2, 1)
+
+    def forward(self, x):
+        y = [x]
+        y.extend(m(y[-1]) for m in self.m)
+        return x + self.cv(torch.cat(y, 1)) if self.shortcut else self.cv(torch.cat(y, 1))

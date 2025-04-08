@@ -117,6 +117,8 @@ from .block import (
     AFE,
     TorchVision,
     C2f_p,
+    EffC2,
+    EffC2f,
 )
 from .conv import (
     CBAM,
@@ -137,7 +139,7 @@ from .conv import (
     WTConv2d,
     PConv,
 )
-from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, ARBDetect
+from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, ARBDetect, PartialDetect
 from .transformer import (
     AIFI,
     MLP,
@@ -286,4 +288,7 @@ __all__ = (
     "A2C2f",
     "PConv",
     "C2f_p",
+    "PartialDetect",
+    "EffC2",
+    "EffC2f",
 )

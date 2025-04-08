@@ -43,6 +43,7 @@ from ultralytics.nn.modules import (
     ConvTranspose,
     Detect,
     ARBDetect,
+    PartialDetect,
     DWConv,
     DWConvTranspose2d,
     Focus,
@@ -125,6 +126,8 @@ from ultralytics.nn.modules import (
     SCAM,
     AFE,
     C2f_p,
+    EffC2,
+    EffC2f,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -1212,6 +1215,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             A2C2f,
             EUCB,
             C2f_p,
+            EffC2,
+            EffC2f,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1232,6 +1237,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C2PSA,
             A2C2f,
             C2f_p,
+            EffC2,
+            EffC2f,
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
@@ -1325,11 +1332,11 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 c2 = make_divisible(min(c2, max_channels)*width, 8)
             args = [c1, c2, index, n, *args[2:]]
             n = 1
-        elif m in frozenset({Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect}):
+        elif m in frozenset({Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect, PartialDetect}):
             args.append([ch[x] for x in f])
             if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
-            if m in {Detect, Segment, Pose, OBB}:
+            if m in {Detect, Segment, Pose, OBB, PartialDetect}:
                 m.legacy = legacy
         elif m is RTDETRDecoder:  # special case, channels arg must be passed in index 1
             args.insert(1, [ch[x] for x in f])
