@@ -1036,10 +1036,10 @@ def feature_visualization_merged(x, module_type, stage, merge_mode="mean", save_
                 raise ValueError(f"Unsupported merge_mode: {merge_mode}. Choose from 'mean', 'sum', 'max'.")
  
             # Visualize
-            plt.figure(figsize=(6, 6))
             plt.imshow(merged_feature, cmap="viridis")  # Use colormap for visualization
             plt.axis("off")
             # plt.title(f"Stage {stage}: {module_type} (Merged: {merge_mode})")
             LOGGER.info(f"Saving {f}...)")
             plt.savefig(f, dpi=600, bbox_inches='tight', pad_inches=0)
             plt.close()
+            np.save(str(f.with_suffix(".npy")), merged_feature.numpy())  # npy save
