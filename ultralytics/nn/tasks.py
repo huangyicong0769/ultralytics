@@ -140,7 +140,7 @@ from ultralytics.utils.loss import (
     v8SegmentationLoss,
 )
 from ultralytics.utils.ops import make_divisible
-from ultralytics.utils.plotting import feature_visualization
+from ultralytics.utils.plotting import feature_visualization, feature_visualization_merged
 from ultralytics.utils.torch_utils import (
     fuse_conv_and_bn,
     fuse_deconv_and_bn,
@@ -218,7 +218,10 @@ class BaseModel(torch.nn.Module):
             x = m(x)  # run
             y.append(x if m.i in self.save else None)  # save output
             if visualize:
-                feature_visualization(x, m.type, m.i, save_dir=visualize)
+                feature_visualization_merged(x, m.type, m.i, save_dir=visualize, merge_mode='mean')
+                feature_visualization_merged(x, m.type, m.i, save_dir=visualize, merge_mode='max')
+                feature_visualization_merged(x, m.type, m.i, save_dir=visualize, merge_mode='sum')
+                # feature_visualization(x, m.type, m.i, save_dir=visualize)
             if embed and m.i in embed:
                 embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
                 if m.i == max(embed):

@@ -225,7 +225,7 @@ CFG_BOOL_KEYS = frozenset(
         "save_frames",
         "show_labels",
         "show_conf",
-        "visualize",
+        # "visualize",
         "augment",
         "agnostic_nms",
         "retina_masks",
