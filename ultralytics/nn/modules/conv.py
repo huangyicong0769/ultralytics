@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 
 from .utils import create_wavelet_filter, wavelet_transform, inverse_wavelet_transform
 
@@ -26,6 +27,7 @@ __all__ = (
     "RepConv",
     "Index",
     "WTConv",
+    "SCConv",
 )
 
 
@@ -856,3 +858,82 @@ class PConv(nn.Module):
     def _forward_split_cat(self, x):
         x1, x2 = torch.split(x, [self.c1, self.c2], dim=1)
         return torch.cat((self.conv(x1), x2), 1)
+    
+class GroupBatchnorm2d(nn.Module):
+    def __init__(self, c, g=16, eps=1e-10):
+        super().__init__()
+        assert c >= g
+        self.w = nn.Parameter(torch.randn(c, 1, 1))
+        self.b = nn.Parameter(torch.zeros(c, 1, 1))
+        self.g = g
+        self.eps = eps
+
+    def forward(self, x:Tensor)->Tensor:
+        B, C, H, W = x.shape
+        x = x.view(B, self.g, -1)
+        mean = x.mean(dim=2, keepdim=True)
+        std = x.std(dim=2, keepdim=True)
+        x = ((x - mean)/(std + self.eps)).view(B, C, H, W)
+        return x * self.w + self.b
+    
+class SRU(nn.Module):
+    '''Spatial Reconstruction Unit.
+    '''
+    def __init__(self, c, g=16, treshold=0.5, gn=True):
+        super().__init__()
+        self.gn = nn.GroupNorm(g, c) if gn else GroupBatchnorm2d(c, g)
+        self.treshold = treshold
+        self.act = nn.Sigmoid()
+
+    def forward(self, x:Tensor)->Tensor:
+        y = self.gn(x)
+        w = (self.gn.weight/sum(self.gn.weight)).view(1, -1, 1, 1)
+        w = self.act(w*y)
+
+        x1 = x * torch.where(w>self.treshold, torch.ones_like(w), w)
+        x2 = x * torch.where(w>self.treshold, torch.zeros_like(w), w)
+
+        x11, x12 = torch.split(x1, x1.shape[1]//2, dim=1)
+        x21, x22 = torch.split(x2, x2.shape[1]//2, dim=1)
+        return torch.cat((x11+x22, x12+x21), dim=1)
+    
+class CRU(nn.Module):
+    '''Channel Reconstruction Unit
+    '''
+    def __init__(self, c, k=3, g=2, e=0.5, a=0.5):
+        super().__init__()
+        self.ca = int(c*a)
+        self.c1a = c-self.ca
+        self.cv1 = nn.Conv2d(self.ca, int(self.ca*e), 1, bias=False)
+        self.cv2 = nn.Conv2d(self.c1a, int(self.c1a*e), 1, bias=False)
+        self.gwc = nn.Conv2d(int(self.ca*e), c, kernel_size=k, groups=g, padding=autopad(k))
+        self.pwc1 = nn.Conv2d(int(self.ca*e), c, kernel_size=1, bias=False)
+        self.pwc2 = nn.Conv2d(int(self.c1a*e), c-int(self.c1a*e), kernel_size=1, bias=False)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.act = nn.Softmax(dim=1)
+
+    def forward(self, x:Tensor)->Tensor:
+        B, C, _, _ = x.shape
+        xup, xlow = torch.split(x, [self.ca, self.c1a], 1)
+        xup = self.cv1(xup)
+        xlow = self.cv2(xlow)
+
+        y1 = self.gwc(xup) + self.pwc1(xup)
+        y2 = torch.cat([xlow, self.pwc2(xlow)], dim=1)
+
+        s1 = self.pool(y1)
+        s2 = self.pool(y2)
+        b1, b2 = self.act(torch.stack([s1, s2], dim=1)).view(B, 2, -1, 1, 1).chunk(2, dim=1)
+        return y1 * b1.view(B, -1, 1, 1) + y2 * b2.view(B, -1, 1, 1)
+    
+class SCConv(nn.Module):
+    '''The implement of SCConv in 
+    SCConv: Spatial and Channel Reconstruction Convolution for Feature Redundancy
+    '''
+    def __init__(self, c, k=3, e=0.5, a=0.5, treshold=0.5, g=(4, 2)):
+        super().__init__()
+        self.SRU = SRU(c, g[0], treshold=treshold)
+        self.CRU = CRU(c, k, g[1], e=e, a=a)
+
+    def forward(self, x:Tensor)->Tensor:
+        return self.CRU(self.SRU(x))

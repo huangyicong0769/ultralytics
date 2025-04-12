@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
-from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose, InceptionDWConv2d, SpatialAttention, PConv
+from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose, InceptionDWConv2d, SpatialAttention, PConv, SCConv
 from .transformer import TransformerBlock, MLPBlock, LayerNorm2d, MLP, DropPath
 from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe, spatial_selective
 
@@ -4128,13 +4128,20 @@ class C2f_p(C2f):
         super().__init__(c1, c2, n, shortcut, g, e)
         self.m = nn.ModuleList(Bottleneck_p(self.c, self.c, shortcut=shortcut, e=1) for _ in range(n))
 
+class SCBottleneck(BottleneckAttn):
+    def __init__(self, c1, c2, attn=nn.Identity, shortcut=True, e=(1.0, 0.5), a=0.5, treshold=0.5):
+        super().__init__(c1, c2, attn, shortcut, 1, (3, 3), e[0])
+        assert c1 == c2
+        self.cv1 = SCConv(c1, 3, e[1], a, treshold)
+        self.cv2 = SCConv(c1, 3, e[1], a, treshold)
+
 class EffC2(nn.Module):
     def __init__(self, c1, c2, n=1, shortcut=False, e=0.25):
         super().__init__()
         assert c1 == c2
         self.shortcut = shortcut
 
-        self.m = nn.Sequential(*(Bottleneck_p(c1, c1, MCA, shortcut=shortcut, e=e) for _ in range(n)))
+        self.m = nn.Sequential(*(SCBottleneck(c1, c1, MCA, shortcut=shortcut, e=e) for _ in range(n)))
         self.cv = Conv(c1, c1, 1)
 
     def forward(self, x):
@@ -4143,7 +4150,7 @@ class EffC2(nn.Module):
 class EffC2f(EffC2):
     def __init__(self, c1, c2, n=1, shortcut=False, e=0.25):
         super().__init__(c1, c2, n, shortcut, e)
-        self.m = nn.ModuleList(Bottleneck_p(c1, c1, MCA, shortcut=shortcut, e=e) for _ in range(n))
+        self.m = nn.ModuleList(SCBottleneck(c1, c1, MCA, shortcut=shortcut, e=e) for _ in range(n))
         self.cv = Conv((n + 1)*c1, c2, 1)
 
     def forward(self, x):

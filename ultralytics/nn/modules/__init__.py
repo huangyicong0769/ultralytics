@@ -138,6 +138,7 @@ from .conv import (
     WTConv,
     WTConv2d,
     PConv,
+    SCConv,
 )
 from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, ARBDetect, PartialDetect
 from .transformer import (
@@ -291,4 +292,5 @@ __all__ = (
     "PartialDetect",
     "EffC2",
     "EffC2f",
+    "SCConv",
 )
