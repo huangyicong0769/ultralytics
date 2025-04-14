@@ -119,6 +119,7 @@ from .block import (
     C2f_p,
     EffC2,
     EffC2f,
+    LAE,
 )
 from .conv import (
     CBAM,
@@ -293,4 +294,5 @@ __all__ = (
     "EffC2",
     "EffC2f",
     "SCConv",
+    "LAE",
 )

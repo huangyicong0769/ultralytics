@@ -4,6 +4,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 
 from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
@@ -14,6 +15,7 @@ from .utils import normal_init, constant_init, resize, hamming2D, compute_simila
 from math import log2, log
 from typing import Literal
 from timm.layers import trunc_normal_
+from einops import rearrange
 
 __all__ = (
     "DFL",
@@ -113,6 +115,7 @@ __all__ = (
     "C2f_p",
     "EffC2",
     "EffC2f",
+    "LAE",
 )
 
 class DFL(nn.Module):
@@ -1970,7 +1973,7 @@ class MCAGate(nn.Module):
                 raise NotImplementedError
             
         # self.conv = nn.Conv2d(1, 1, kernel_size=(1, k), stride=1, padding=(0, (k-1)//2), bias=False)
-        self.conv = Conv(1, 1, (1, k), 1, (0, (k-1)//2))
+        self.conv = Conv(1, 1, (1, k), 1, (0, (k-1)//2), act=False)
         self.sigmoid = nn.Sigmoid()
         self.weight = nn.Parameter(torch.rand(2))
 
@@ -4157,3 +4160,28 @@ class EffC2f(EffC2):
         y = [x]
         y.extend(m(y[-1]) for m in self.m)
         return x + self.cv(torch.cat(y, 1)) if self.shortcut else self.cv(torch.cat(y, 1))
+    
+class LAE(nn.Module):
+    '''Light-weight Adaptive Extraction
+    https://github.com/VincentYuuuuuu/LSM-YOLO/blob/master/ultralytics/nn/modules/block.py
+    '''
+    def __init__(self, c, g=16) -> None:
+        super().__init__()
+        
+        self.act = nn.Softmax(dim=-1)
+        self.m = nn.Sequential(
+            nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
+            Conv(c, c, k=1)
+        )
+        
+        self.conv = Conv(c, c * 4, k=3, s=2, g=(c // g))
+    
+    def forward(self, x:Tensor) -> Tensor:
+        # bs, ch, 2*h, 2*w => bs, ch, h, w, 4
+        att = rearrange(self.m(x), 'bs ch (s1 h) (s2 w) -> bs ch h w (s1 s2)', s1=2, s2=2)
+        att = self.act(att)
+        
+        # bs, 4 * ch, h, w => bs, ch, h, w, 4
+        x = rearrange(self.conv(x), 'bs (s ch) h w -> bs ch h w s', s=4)
+        x = torch.sum(x * att, dim=-1)
+        return x
