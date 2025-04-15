@@ -116,6 +116,7 @@ __all__ = (
     "EffC2",
     "EffC2f",
     "LAE",
+    "LGAE",
 )
 
 class DFL(nn.Module):
@@ -1953,7 +1954,7 @@ class StdPool(nn.Module):
         return std
         
 class MCAGate(nn.Module):
-    def __init__(self, k=3, pool_types=['avg', 'std']):
+    def __init__(self, k=3, pool_types=['avg', 'std'], act=nn.Sigmoid()):
         """Constructs a MCAGate module.
         Args:
             k: kernel size
@@ -1974,7 +1975,7 @@ class MCAGate(nn.Module):
             
         # self.conv = nn.Conv2d(1, 1, kernel_size=(1, k), stride=1, padding=(0, (k-1)//2), bias=False)
         self.conv = Conv(1, 1, (1, k), 1, (0, (k-1)//2), act=False)
-        self.sigmoid = nn.Sigmoid()
+        self.act = act
         self.weight = nn.Parameter(torch.rand(2))
 
     def forward(self, x):
@@ -1994,7 +1995,7 @@ class MCAGate(nn.Module):
         out = out.permute(0, 3, 2, 1).contiguous()
         out = self.conv(out)
         out = out.permute(0, 3, 2, 1).contiguous()
-        out = self.sigmoid(out)
+        out = self.act(out)
         return out
 
 class LSKMCAGate(MCAGate):
@@ -2018,7 +2019,7 @@ class LSKMCAGate(MCAGate):
         x2 = self.conv2(x1)
         out = 1/2 * sum(spatial_selective([x1, x2], self.cvsq))
         out = out.permute(0, 3, 2, 1).contiguous()
-        out = self.sigmoid(out)
+        out = self.act(out)
         out = out.expand_as(x)
 
         return x*out
@@ -4185,3 +4186,10 @@ class LAE(nn.Module):
         x = rearrange(self.conv(x), 'bs (s ch) h w -> bs ch h w s', s=4)
         x = torch.sum(x * att, dim=-1)
         return x
+    
+class LGAE(LAE):
+    '''Light-weight Gated Adaptive Extraction
+    '''
+    def __init__(self, c, g=16):
+        super().__init__(c, g)
+        self.m = MCAGate(act=nn.Identity())

@@ -120,6 +120,7 @@ from .block import (
     EffC2,
     EffC2f,
     LAE,
+    LGAE,
 )
 from .conv import (
     CBAM,
@@ -295,4 +296,5 @@ __all__ = (
     "EffC2f",
     "SCConv",
     "LAE",
+    "LGAE",
 )
