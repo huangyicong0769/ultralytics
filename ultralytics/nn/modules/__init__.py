@@ -155,6 +155,7 @@ from .transformer import (
     TransformerEncoderLayer,
     TransformerLayer,
 )
+from .operator import StdPool2d
 
 __all__ = (
     "Conv",
@@ -297,4 +298,5 @@ __all__ = (
     "SCConv",
     "LAE",
     "LGAE",
+    "StdPool2d",
 )
