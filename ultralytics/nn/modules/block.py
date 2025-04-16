@@ -11,6 +11,7 @@ from ultralytics.utils.torch_utils import fuse_conv_and_bn
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad, WTConv, ConvTranspose, InceptionDWConv2d, SpatialAttention, PConv, SCConv
 from .transformer import TransformerBlock, MLPBlock, LayerNorm2d, MLP, DropPath
 from .utils import normal_init, constant_init, resize, hamming2D, compute_similarity, carafe, spatial_selective
+from .operator import StdPool2d
 
 from math import log2, log
 from typing import Literal
@@ -4187,9 +4188,26 @@ class LAE(nn.Module):
         x = torch.sum(x * att, dim=-1)
         return x
     
+# class LGAE(LAE):
+#     '''Light-weight Gated Adaptive Extraction_i
+#     '''
+#     def __init__(self, c, g=16):
+#         super().__init__(c, g)
+#         self.m = MCAGate(act=nn.Identity())
+
 class LGAE(LAE):
-    '''Light-weight Gated Adaptive Extraction
+    '''Light-weight Gated Adaptive Extraction_ii
     '''
     def __init__(self, c, g=16):
         super().__init__(c, g)
-        self.m = MCAGate(act=nn.Identity())
+        self.pools = nn.ModuleList([nn.AvgPool2d(kernel_size=3, stride=1, padding=1), StdPool2d(k=3, s=1, p=1)])
+        self.weight = nn.Parameter(torch.rand(2))
+        self.pconv = Conv(c, c, 1, act=False)
+        del self.m
+        self.m = self._gate
+
+    def _gate(self, x:Tensor)->Tensor:
+        f = [pool(x) for pool in self.pools]
+        weight = torch.sigmoid(self.weight)
+        x = 1/2*(f[0]+f[1]) + weight[0]*f[0]+weight[1]*f[1]
+        return self.pconv(x)
