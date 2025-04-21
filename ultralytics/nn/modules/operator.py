@@ -85,6 +85,7 @@ class StdPool2d(nn.Module):
             [9.0, 10.0, 11.0, 12.0],
             [13.0, 14.0, 15.0, 16.0]
         ]).unsqueeze(0).unsqueeze(0)  # 添加批次和通道维度 [1, 1, 4, 4]
+        input_tensor = torch.rand((1, 1, 4, 4))
 
         # 测试常规用例
         print("=== 测试 kernel_size=2, stride=2 ===")

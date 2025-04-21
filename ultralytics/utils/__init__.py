@@ -1134,7 +1134,8 @@ class JSONDict(dict):
             with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(dict(self), f, indent=2, default=self._json_default)
         except Exception as e:
-            print(f"Error writing to {self.file_path}: {e}")
+            if str(self.file_path).endswith("settings.json") is False:
+                print(f"Error writing to {self.file_path}: {e}")
 
     @staticmethod
     def _json_default(obj):
