@@ -70,7 +70,7 @@ class Detect(nn.Module):
         for i in range(self.nl):
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
 
-        # return x # for special use
+        # return x # for special use for export
 
         if self.training:  # Training path
             return x

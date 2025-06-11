@@ -4188,32 +4188,39 @@ class LAE(nn.Module):
         x = torch.sum(x * att, dim=-1)
         return x
     
-# class LGAE(LAE):
-#     '''Light-weight Gated Adaptive Extraction_i
-#     '''
-#     def __init__(self, c, g=16):
-#         super().__init__(c, g)
-#         self.m = MCAGate(act=nn.Identity())
-
-class LGAEGate(nn.Module):
-    def __init__(self, c):
-        super().__init__()
-        self.pools = nn.ModuleList([nn.AvgPool2d(3, 1, 1), nn.MaxPool2d(3, 1, 1)])
-        self.weight = nn.Parameter(torch.rand(2), requires_grad=True)
-        # self.weight[-1] = 0.
-        self.conv = Conv(c, c, 1, act=False)
-
-    def forward(self, x:Tensor)->Tensor:
-        n = len(self.pools)
-        f = torch.stack([pool(x) for pool in self.pools], dim=1) #B N C H W
-        w = self.weight.view(1, n, 1, 1, 1)
-        # w = torch.sigmoid(w)
-        x = torch.sum(f * w, 1)
-        return self.conv(x.squeeze(1))
-
 class LGAE(LAE):
-    '''Light-weight Gated Adaptive Extraction_ii
+    '''Light-weight Gated Adaptive Extraction_i
     '''
     def __init__(self, c, g=16):
         super().__init__(c, g)
-        self.m = LGAEGate(c)
+        self.m = MCAGate(act=nn.Identity())
+
+class LGAE2(LAE):
+    '''Light-weight Gated Adaptive Extraction_i
+    '''
+    def __init__(self, c, g=16):
+        super().__init__(c, g)
+        self.m = MCA(c, no_spatial=True)
+
+# class LGAEGate(nn.Module):
+#     def __init__(self, c):
+#         super().__init__()
+#         self.pools = nn.ModuleList([nn.AvgPool2d(3, 1, 1), nn.MaxPool2d(3, 1, 1)])
+#         self.weight = nn.Parameter(torch.rand(2), requires_grad=True)
+#         # self.weight[-1] = 0.
+#         self.conv = Conv(c, c, 1, act=False)
+
+#     def forward(self, x:Tensor)->Tensor:
+#         n = len(self.pools)
+#         f = torch.stack([pool(x) for pool in self.pools], dim=1) #B N C H W
+#         w = self.weight.view(1, n, 1, 1, 1)
+#         # w = torch.sigmoid(w)
+#         x = torch.sum(f * w, 1)
+#         return self.conv(x.squeeze(1))
+
+# class LGAE(LAE):
+#     '''Light-weight Gated Adaptive Extraction_ii
+#     '''
+#     def __init__(self, c, g=16):
+#         super().__init__(c, g)
+#         self.m = LGAEGate(c)

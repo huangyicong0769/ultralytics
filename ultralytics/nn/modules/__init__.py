@@ -121,6 +121,7 @@ from .block import (
     EffC2f,
     LAE,
     LGAE,
+    LGAE2,
 )
 from .conv import (
     CBAM,
@@ -298,5 +299,6 @@ __all__ = (
     "SCConv",
     "LAE",
     "LGAE",
+    "LGAE2",
     "StdPool2d",
 )
